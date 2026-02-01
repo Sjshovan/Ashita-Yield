@@ -27,6 +27,7 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 --]]
 
 require 'os'
+local imgui = require('imgui');
 
 ----------------------------------------------------------------------------------------------------
 -- Variables
@@ -149,6 +150,23 @@ function table.sortKeysByLength(t, desc)
         table.sort(ret, function(a, b) return a:len() < b:len() end);
     else
         table.sort(ret, function(a, b) return a:len() > b:len() end);
+    end
+    return ret;
+end
+
+----------------------------------------------------------------------------------------------------
+-- func: sortbykey
+-- desc: Sort the table keys by their numeric values.
+----------------------------------------------------------------------------------------------------
+function table.sortbykey(t, desc)
+    local ret = {}
+    for k, v in pairs(t) do
+        table.insert(ret, k)
+    end
+    if (desc) then
+        table.sort(ret, function(a, b) return t[a] < t[b] end);
+    else
+        table.sort(ret, function(a, b) return t[a] > t[b] end);
     end
     return ret;
 end
@@ -322,9 +340,9 @@ end
 ----------------------------------------------------------------------------------------------------
 function imguiPushActiveBtnColor(cond)
     if cond then
-        imgui.PushStyleColor(ImGuiCol_Button, 0.21, 0.47, 0.59, 1); -- info
+        imgui.PushStyleColor(ImGuiCol.Button, { 0.21, 0.47, 0.59, 1 }); -- info
     else
-        imgui.PushStyleColor(ImGuiCol_Button, 0.25, 0.69, 1.0, 0.1); -- secondary
+        imgui.PushStyleColor(ImGuiCol.Button, { 0.25, 0.69, 1.0, 0.1 }); -- secondary
     end
     return cond;
 end
@@ -335,9 +353,9 @@ end
 ----------------------------------------------------------------------------------------------------
 function imguiPushDisabled(cond)
     if cond then
-        imgui.PushStyleVar(ImGuiStyleVar_Alpha, 0.5);
-        imgui.PushStyleColor(ImGuiCol_ButtonHovered, 49/255, 62/255, 75/255, 1);
-        imgui.PushStyleColor(ImGuiCol_ButtonActive, 49/255, 62/255, 75/255, 1);
+        imgui.PushStyleVar(ImGuiStyleVar.Alpha, 0.5);
+        imgui.PushStyleColor(ImGuiCol.ButtonHovered, { 49/255, 62/255, 75/255, 1 });
+        imgui.PushStyleColor(ImGuiCol.ButtonActive, { 49/255, 62/255, 75/255, 1 });
     end
     return cond;
 end
