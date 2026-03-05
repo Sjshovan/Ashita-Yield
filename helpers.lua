@@ -125,14 +125,18 @@ end
 -- desc: Sort table keys alphabetically.
 ----------------------------------------------------------------------------------------------------
 function table.sortKeysByAlphabet(t, desc)
+    if type(t) ~= 'table' then
+        return {}
+    end
     local ret = {}
     for k, v in pairs(t) do
         table.insert(ret, k)
     end
+    local normalize = function(v) return tostring(v or ''):lower(); end
     if (desc) then
-        table.sort(ret, function(a, b) return a:lower() < b:lower() end);
+        table.sort(ret, function(a, b) return normalize(a) < normalize(b) end);
     else
-        table.sort(ret, function(a, b) return a:lower() > b:lower() end);
+        table.sort(ret, function(a, b) return normalize(a) > normalize(b) end);
     end
     return ret;
 end
@@ -142,14 +146,18 @@ end
 -- desc: Sort table keys by string length.
 ----------------------------------------------------------------------------------------------------
 function table.sortKeysByLength(t, desc)
+    if type(t) ~= 'table' then
+        return {}
+    end
     local ret = {}
     for k, v in pairs(t) do
         table.insert(ret, k)
     end
+    local strlen = function(v) return tostring(v or ''):len(); end
     if (desc) then
-        table.sort(ret, function(a, b) return a:len() < b:len() end);
+        table.sort(ret, function(a, b) return strlen(a) < strlen(b) end);
     else
-        table.sort(ret, function(a, b) return a:len() > b:len() end);
+        table.sort(ret, function(a, b) return strlen(a) > strlen(b) end);
     end
     return ret;
 end
@@ -159,14 +167,18 @@ end
 -- desc: Sort the table keys by their numeric values.
 ----------------------------------------------------------------------------------------------------
 function table.sortbykey(t, desc)
+    if type(t) ~= 'table' then
+        return {}
+    end
     local ret = {}
     for k, v in pairs(t) do
         table.insert(ret, k)
     end
+    local nval = function(k) return tonumber(t[k]) or 0; end
     if (desc) then
-        table.sort(ret, function(a, b) return t[a] < t[b] end);
+        table.sort(ret, function(a, b) return nval(a) < nval(b) end);
     else
-        table.sort(ret, function(a, b) return t[a] > t[b] end);
+        table.sort(ret, function(a, b) return nval(a) > nval(b) end);
     end
     return ret;
 end
@@ -176,35 +188,65 @@ end
 -- desc: Sort the tables values by it time stamp strings.
 ----------------------------------------------------------------------------------------------------
 function table.sortReportsByDate(t, desc)
+    if type(t) ~= 'table' then
+        return {}
+    end
     local ret = {}
     for k, v in pairs(t) do
         table.insert(ret, v)
     end
     local now = os.time();
+    local parseReportDate = function(name)
+        if type(name) ~= 'string' then
+            return nil;
+        end
+        local datePart = string.match(name, "__(.*)__");
+        local timePart = string.match(name, ".*__(.*).log$");
+        if datePart == nil or timePart == nil then
+            return nil;
+        end
+        local y, m, d = string.match(string.gsub(datePart, "_", "-"), "(%d%d%d%d)-?(%d?%d?)-?(%d?%d?)$");
+        local h, mi, s = string.match(string.gsub(timePart, "_", ":"), "(%d%d):?(%d?%d?):?(%d?%d?)$");
+        if not y or not m or not d or not h or not mi or not s then
+            return nil;
+        end
+        local stamp = os.time{
+            year = tonumber(y),
+            month = tonumber(m),
+            day = tonumber(d),
+            hour = tonumber(h),
+            min = tonumber(mi),
+            sec = tonumber(s)
+        };
+        return stamp;
+    end
+
+    local newerFirst = function(a, b)
+        local tA = parseReportDate(a);
+        local tB = parseReportDate(b);
+        if tA and tB then
+            local diffA = os.difftime(now, tA);
+            local diffB = os.difftime(now, tB);
+            return diffA < diffB;
+        end
+        return tostring(a) > tostring(b);
+    end
+
+    local olderFirst = function(a, b)
+        local tA = parseReportDate(a);
+        local tB = parseReportDate(b);
+        if tA and tB then
+            local diffA = os.difftime(now, tA);
+            local diffB = os.difftime(now, tB);
+            return diffA > diffB;
+        end
+        return tostring(a) < tostring(b);
+    end
+
     if (desc) then
-        table.sort(ret, function(a, b)
-            local yA, mA, dA = string.match(string.gsub(string.match(a, "__(.*)__"), "_", "-"), "(%d%d%d%d)-?(%d?%d?)-?(%d?%d?)$");
-            local hA, miA, sA = string.match(string.gsub(string.match(a, ".*__(.*).log$"), "_", ":"), "(%d%d):?(%d?%d?):?(%d?%d?)$");
-            local yB, mB, dB = string.match(string.gsub(string.match(b, "__(.*)__"), "_", "-"), "(%d%d%d%d)-?(%d?%d?)-?(%d?%d?)$");
-            local hB, miB, sB = string.match(string.gsub(string.match(b, ".*__(.*).log$"), "_", ":"), "(%d%d):?(%d?%d?):?(%d?%d?)$");
-
-            local diffA = os.difftime(now, os.time{year=yA, month=mA, day=dA, hour=hA, min=miA, sec=sA});
-            local diffB = os.difftime(now, os.time{year=yB, month=mB, day=dB, hour=hB, min=miB, sec=sB});
-
-            return diffA < diffB
-        end);
+        table.sort(ret, newerFirst);
     else
-        table.sort(ret, function(a, b)
-            local yA, mA, dA = string.match(string.gsub(string.match(a, "__(.*)__"), "_", "-"), "(%d%d%d%d)-?(%d?%d?)-?(%d?%d?)$");
-            local hA, miA, sA = string.match(string.gsub(string.match(a, ".*__(.*).log$"), "_", ":"), "(%d%d):?(%d?%d?):?(%d?%d?)$");
-            local yB, mB, dB = string.match(string.gsub(string.match(b, "__(.*)__"), "_", "-"), "(%d%d%d%d)-?(%d?%d?)-?(%d?%d?)$");
-            local hB, miB, sB = string.match(string.gsub(string.match(b, ".*__(.*).log$"), "_", ":"), "(%d%d):?(%d?%d?):?(%d?%d?)$");
-
-            local diffA = os.difftime(now, os.time{year=yA, month=mA, day=dA, hour=hA, min=miA, sec=sA});
-            local diffB = os.difftime(now, os.time{year=yB, month=mB, day=dB, hour=hB, min=miB, sec=sB});
-
-            return diffA > diffB
-        end);
+        table.sort(ret, olderFirst);
     end
     return ret;
 end
@@ -254,12 +296,19 @@ end
 ----------------------------------------------------------------------------------------------------
 function imguiShowToolTip(text, enabled)
     if enabled then
+        local queueFn = rawget(_G, '__yield_queue_hover_tooltip');
+        if type(queueFn) == 'function' then
+            -- New behavior: no inline "(?)"; tooltip is attached to next control hover.
+            return queueFn(text, enabled);
+        end
+        -- Fallback behavior when queue hook is unavailable.
         imgui.TextDisabled('(?)');
-        if (imgui.IsItemHovered()) then
+        if imgui.IsItemHovered() then
             imgui.SetTooltip(text);
         end
+        return true;
     end
-    return enabled
+    return false;
 end
 
 ----------------------------------------------------------------------------------------------------
@@ -307,18 +356,27 @@ end
 -- desc: Converts an imgui color table to a D3DCOLOR int.
 ----------------------------------------------------------------------------------------------------
 function colorTableToInt(t)
-    local a = t[4];
-    local r = t[1] * 255;
-    local g = t[2] * 255;
-    local b = t[3] * 255;
-
-    -- Handle 3 and 4 color tables..
-    if (a == nil) then
-        a = 255;
-    else
-        a = a * 255;
+    local normalize = function(v, alpha)
+        local n = tonumber(v);
+        if n == nil then
+            return alpha and 255 or 0;
+        end
+        -- Support both 0..1 and 0..255 inputs.
+        if n <= 1.0 then
+            n = n * 255.0;
+        end
+        if n < 0 then n = 0; end
+        if n > 255 then n = 255; end
+        return n;
     end
 
+    local r = normalize(t[1], false);
+    local g = normalize(t[2], false);
+    local b = normalize(t[3], false);
+    local a = 255;
+    if t[4] ~= nil then
+        a = normalize(t[4], true);
+    end
     return math.d3dcolor(a, r, g, b);
 end
 
@@ -340,9 +398,9 @@ end
 ----------------------------------------------------------------------------------------------------
 function imguiPushActiveBtnColor(cond)
     if cond then
-        imgui.PushStyleColor(ImGuiCol.Button, { 0.21, 0.47, 0.59, 1 }); -- info
+        imgui.PushStyleColor(ImGuiCol.Button, { 0.34, 0.36, 0.38, 1.0 }); -- active gray
     else
-        imgui.PushStyleColor(ImGuiCol.Button, { 0.25, 0.69, 1.0, 0.1 }); -- secondary
+        imgui.PushStyleColor(ImGuiCol.Button, { 0.24, 0.25, 0.27, 1.0 }); -- neutral gray
     end
     return cond;
 end

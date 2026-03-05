@@ -1,2 +1,7 @@
 reports/*
 settings/*
+logs/*.log
+.code/*
+storage/*
+.idea/*
+logs/*
