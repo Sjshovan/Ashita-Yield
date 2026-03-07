@@ -525,20 +525,20 @@ local uiVariables =
     ["var_ClamBreakSoundFile"]    = { '' },
     ["var_AutoGenReports"]        = { true },
     ["var_WindowLocked"]          = { false },
-    ["var_TextScaleBase"]         = { 1.29 },
-    ["var_TextScaleFactor"]       = { 0.525 },
-    ["var_MetricsTextScaleBase"]  = { 1.29 },
-    ["var_MetricsTextScaleFactor"]= { 0.525 },
-    ["var_ButtonTextScaleBase"]   = { 1.29 },
-    ["var_ButtonTextScaleFactor"] = { 0.525 },
-    ["var_ButtonSizeXBase"]       = { 1.0 },
-    ["var_ButtonSizeXFactor"]     = { 0.0 },
-    ["var_ButtonSizeYBase"]       = { 1.0 },
-    ["var_ButtonSizeYFactor"]     = { 0.0 },
+    ["var_TextScaleBase"]         = { 1.15 },
+    ["var_TextScaleFactor"]       = { 0.45 },
+    ["var_MetricsTextScaleBase"]  = { 1.15 },
+    ["var_MetricsTextScaleFactor"]= { 0.45 },
+    ["var_ButtonTextScaleBase"]   = { 1.10 },
+    ["var_ButtonTextScaleFactor"] = { 0.45 },
+    ["var_ButtonSizeXBase"]       = { 0.95 },
+    ["var_ButtonSizeXFactor"]     = { 1.0 },
+    ["var_ButtonSizeYBase"]       = { 0.95 },
+    ["var_ButtonSizeYFactor"]     = { 1.0 },
     ["var_WindowXScaleBase"]      = { 1.0 },
     ["var_WindowXScaleFactor"]    = { 1.0 },
     ["var_WindowYScaleBase"]      = { 1.0 },
-    ["var_WindowYScaleFactor"]    = { 0.72 },
+    ["var_WindowYScaleFactor"]    = { 1.0 },
 
     -- Internal
     ['var_WindowVisible']          = { true },
@@ -617,20 +617,50 @@ local function clampSettingNumber(value, defaultValue, minValue, maxValue)
 end
 
 local function ensureScaleTuningSettings()
-    settings.general.textScaleBase      = clampSettingNumber(settings.general.textScaleBase, 1.29, 0.5, 3.0);
-    settings.general.textScaleFactor    = clampSettingNumber(settings.general.textScaleFactor, 0.525, 0.0, 3.0);
+    if settings and settings.general then
+        local g = settings.general;
+        local legacyBtnXFactor = tonumber(g.buttonSizeXFactor);
+        local legacyBtnYFactor = tonumber(g.buttonSizeYFactor);
+        local legacyBtnFactorOk =
+            (legacyBtnXFactor == 1.0 or legacyBtnXFactor == 0.0) and
+            (legacyBtnYFactor == 1.0 or legacyBtnYFactor == 0.0);
+        local legacyDefaults =
+            tonumber(g.textScaleBase) == 1.29 and tonumber(g.textScaleFactor) == 0.525 and
+            tonumber(g.metricsTextScaleBase) == 1.29 and tonumber(g.metricsTextScaleFactor) == 0.525 and
+            tonumber(g.buttonTextScaleBase) == 1.29 and tonumber(g.buttonTextScaleFactor) == 0.525 and
+            tonumber(g.buttonSizeXBase) == 1.0 and tonumber(g.buttonSizeYBase) == 1.0 and
+            legacyBtnFactorOk;
+        if legacyDefaults then
+            g.textScaleBase = 1.15;
+            g.textScaleFactor = 0.45;
+            g.metricsTextScaleBase = 1.15;
+            g.metricsTextScaleFactor = 0.45;
+            g.buttonTextScaleBase = 1.10;
+            g.buttonTextScaleFactor = 0.45;
+            g.buttonSizeXBase = 0.95;
+            g.buttonSizeXFactor = 1.0;
+            g.buttonSizeYBase = 0.95;
+            g.buttonSizeYFactor = 1.0;
+            writeDebugLog('migrate scale defaults -> v2');
+        end
+        if tonumber(g.windowYScaleFactor) == 0.72 then
+            g.windowYScaleFactor = 1.0;
+        end
+    end
+    settings.general.textScaleBase      = clampSettingNumber(settings.general.textScaleBase, 1.15, 0.5, 3.0);
+    settings.general.textScaleFactor    = clampSettingNumber(settings.general.textScaleFactor, 0.45, 0.0, 3.0);
     settings.general.metricsTextScaleBase   = clampSettingNumber(settings.general.metricsTextScaleBase, settings.general.textScaleBase, 0.5, 3.0);
     settings.general.metricsTextScaleFactor = clampSettingNumber(settings.general.metricsTextScaleFactor, settings.general.textScaleFactor, 0.0, 3.0);
-    settings.general.buttonTextScaleBase    = clampSettingNumber(settings.general.buttonTextScaleBase, settings.general.textScaleBase, 0.5, 3.0);
+    settings.general.buttonTextScaleBase    = clampSettingNumber(settings.general.buttonTextScaleBase, 1.10, 0.5, 3.0);
     settings.general.buttonTextScaleFactor  = clampSettingNumber(settings.general.buttonTextScaleFactor, settings.general.textScaleFactor, 0.0, 3.0);
-    settings.general.buttonSizeXBase        = clampSettingNumber(settings.general.buttonSizeXBase, 1.0, 0.5, 3.0);
-    settings.general.buttonSizeXFactor      = clampSettingNumber(settings.general.buttonSizeXFactor, 0.0, 0.0, 3.0);
-    settings.general.buttonSizeYBase        = clampSettingNumber(settings.general.buttonSizeYBase, 1.0, 0.5, 3.0);
-    settings.general.buttonSizeYFactor      = clampSettingNumber(settings.general.buttonSizeYFactor, 0.0, 0.0, 3.0);
+    settings.general.buttonSizeXBase        = clampSettingNumber(settings.general.buttonSizeXBase, 0.95, 0.5, 3.0);
+    settings.general.buttonSizeXFactor      = clampSettingNumber(settings.general.buttonSizeXFactor, 1.0, 0.0, 3.0);
+    settings.general.buttonSizeYBase        = clampSettingNumber(settings.general.buttonSizeYBase, 0.95, 0.5, 3.0);
+    settings.general.buttonSizeYFactor      = clampSettingNumber(settings.general.buttonSizeYFactor, 1.0, 0.0, 3.0);
     settings.general.windowXScaleBase   = clampSettingNumber(settings.general.windowXScaleBase, 1.0, 0.5, 3.0);
     settings.general.windowXScaleFactor = clampSettingNumber(settings.general.windowXScaleFactor, 1.0, 0.0, 3.0);
     settings.general.windowYScaleBase   = clampSettingNumber(settings.general.windowYScaleBase, 1.0, 0.5, 3.0);
-    settings.general.windowYScaleFactor = clampSettingNumber(settings.general.windowYScaleFactor, 0.72, 0.0, 3.0);
+    settings.general.windowYScaleFactor = clampSettingNumber(settings.general.windowYScaleFactor, 1.0, 0.0, 3.0);
 end
 
 local function sanitizeColorSettings()
@@ -704,20 +734,20 @@ local function syncScaleTuningVarsFromSettings()
 end
 
 local function syncScaleTuningSettingsFromVars()
-    settings.general.textScaleBase      = clampSettingNumber(imgui.GetVarValue(uiVariables["var_TextScaleBase"]), 1.29, 0.5, 3.0);
-    settings.general.textScaleFactor    = clampSettingNumber(imgui.GetVarValue(uiVariables["var_TextScaleFactor"]), 0.525, 0.0, 3.0);
+    settings.general.textScaleBase      = clampSettingNumber(imgui.GetVarValue(uiVariables["var_TextScaleBase"]), 1.15, 0.5, 3.0);
+    settings.general.textScaleFactor    = clampSettingNumber(imgui.GetVarValue(uiVariables["var_TextScaleFactor"]), 0.45, 0.0, 3.0);
     settings.general.metricsTextScaleBase   = clampSettingNumber(imgui.GetVarValue(uiVariables["var_MetricsTextScaleBase"]), settings.general.textScaleBase, 0.5, 3.0);
     settings.general.metricsTextScaleFactor = clampSettingNumber(imgui.GetVarValue(uiVariables["var_MetricsTextScaleFactor"]), settings.general.textScaleFactor, 0.0, 3.0);
-    settings.general.buttonTextScaleBase    = clampSettingNumber(imgui.GetVarValue(uiVariables["var_ButtonTextScaleBase"]), settings.general.textScaleBase, 0.5, 3.0);
+    settings.general.buttonTextScaleBase    = clampSettingNumber(imgui.GetVarValue(uiVariables["var_ButtonTextScaleBase"]), 1.10, 0.5, 3.0);
     settings.general.buttonTextScaleFactor  = clampSettingNumber(imgui.GetVarValue(uiVariables["var_ButtonTextScaleFactor"]), settings.general.textScaleFactor, 0.0, 3.0);
-    settings.general.buttonSizeXBase        = clampSettingNumber(imgui.GetVarValue(uiVariables["var_ButtonSizeXBase"]), 1.0, 0.5, 3.0);
-    settings.general.buttonSizeXFactor      = clampSettingNumber(imgui.GetVarValue(uiVariables["var_ButtonSizeXFactor"]), 0.0, 0.0, 3.0);
-    settings.general.buttonSizeYBase        = clampSettingNumber(imgui.GetVarValue(uiVariables["var_ButtonSizeYBase"]), 1.0, 0.5, 3.0);
-    settings.general.buttonSizeYFactor      = clampSettingNumber(imgui.GetVarValue(uiVariables["var_ButtonSizeYFactor"]), 0.0, 0.0, 3.0);
+    settings.general.buttonSizeXBase        = clampSettingNumber(imgui.GetVarValue(uiVariables["var_ButtonSizeXBase"]), 0.95, 0.5, 3.0);
+    settings.general.buttonSizeXFactor      = clampSettingNumber(imgui.GetVarValue(uiVariables["var_ButtonSizeXFactor"]), 1.0, 0.0, 3.0);
+    settings.general.buttonSizeYBase        = clampSettingNumber(imgui.GetVarValue(uiVariables["var_ButtonSizeYBase"]), 0.95, 0.5, 3.0);
+    settings.general.buttonSizeYFactor      = clampSettingNumber(imgui.GetVarValue(uiVariables["var_ButtonSizeYFactor"]), 1.0, 0.0, 3.0);
     settings.general.windowXScaleBase   = clampSettingNumber(imgui.GetVarValue(uiVariables["var_WindowXScaleBase"]), 1.0, 0.5, 3.0);
     settings.general.windowXScaleFactor = clampSettingNumber(imgui.GetVarValue(uiVariables["var_WindowXScaleFactor"]), 1.0, 0.0, 3.0);
     settings.general.windowYScaleBase   = clampSettingNumber(imgui.GetVarValue(uiVariables["var_WindowYScaleBase"]), 1.0, 0.5, 3.0);
-    settings.general.windowYScaleFactor = clampSettingNumber(imgui.GetVarValue(uiVariables["var_WindowYScaleFactor"]), 0.72, 0.0, 3.0);
+    settings.general.windowYScaleFactor = clampSettingNumber(imgui.GetVarValue(uiVariables["var_WindowYScaleFactor"]), 1.0, 0.0, 3.0);
 end
 
 local function ensureAlertEventSettings()
@@ -799,7 +829,99 @@ local function setWindowFontScale(scale)
     if state and state.window then
         state.window.currentTextScale = s;
     end
+    -- Avoid double-applying scale in nested child windows by checking current font size.
+    if defaultFontSize then
+        local expected = (tonumber(defaultFontSize) or 0.0) * s;
+        local current = tonumber(imgui.GetFontSize()) or expected;
+        if expected > 0.0 and math.abs(current - expected) < 0.25 then
+            return;
+        end
+    end
     imgui.SetWindowFontScale(s);
+end
+
+-- Log current text/button scale sizing once per second per window tag.
+local function logScaleSnapshot(tag, extra)
+    if not state or not state.window or not state.values then
+        return;
+    end
+    local now = os.clock();
+    state.values.scaleSnapshotLogAt = state.values.scaleSnapshotLogAt or {};
+    local last = state.values.scaleSnapshotLogAt[tag] or 0;
+    if (now - last) < 1.0 then
+        return;
+    end
+    state.values.scaleSnapshotLogAt[tag] = now;
+
+    local fontPx = tonumber(imgui.GetFontSize()) or 0.0;
+    local baseFontPx = tonumber(defaultFontSize) or fontPx or 0.0;
+    local textScale = tonumber(state.window.textScale) or 1.0;
+    local metricsScale = tonumber(state.window.metricsTextScale) or textScale;
+    local buttonTextScale = tonumber(state.window.buttonTextScale) or textScale;
+    local buttonSizeXScale = tonumber(state.window.buttonSizeXScale) or 1.0;
+    local buttonSizeYScale = tonumber(state.window.buttonSizeYScale) or 1.0;
+    local padX = 4.0 * buttonSizeXScale;
+    local padY = 3.0 * buttonSizeYScale;
+    local textFontPx = baseFontPx * textScale;
+    local metricsFontPx = baseFontPx * metricsScale;
+    local buttonFontPx = baseFontPx * buttonTextScale;
+    local approxButtonH = buttonFontPx + (padY * 2.0);
+    local frameH = tonumber(imgui.GetFrameHeight()) or 0.0;
+    local frameHS = tonumber(imgui.GetFrameHeightWithSpacing()) or 0.0;
+    local lineH = (imgui.GetTextLineHeight and tonumber(imgui.GetTextLineHeight())) or 0.0;
+    local currentTextScale = tonumber(state.window.currentTextScale) or textScale;
+    local actualW, actualH = 0.0, 0.0;
+    local okSize, size = pcall(function() return imgui.GetWindowSize(); end);
+    if okSize and type(size) == "table" then
+        if size.x ~= nil then
+            actualW = tonumber(size.x) or actualW;
+            actualH = tonumber(size.y) or actualH;
+        elseif size[1] ~= nil then
+            actualW = tonumber(size[1]) or actualW;
+            actualH = tonumber(size[2]) or actualH;
+        end
+    else
+        local okW, w = pcall(function() return imgui.GetWindowWidth(); end);
+        local okH, h = pcall(function() return imgui.GetWindowHeight(); end);
+        if okW then actualW = tonumber(w) or actualW; end
+        if okH then actualH = tonumber(h) or actualH; end
+    end
+
+    writeDebugLog(string.format(
+        "scale_snapshot tag=%s scale=%.3f x=%.3f y=%.3f text=%.3f metrics=%.3f btnText=%.3f btnSizeX=%.3f btnSizeY=%.3f " ..
+        "fontPx=%.2f baseFontPx=%.2f textFontPx=%.2f metricsFontPx=%.2f btnFontPx=%.2f btnPad=(%.1f,%.1f) btnApproxH=%.2f " ..
+        "frameH=%.2f frameHS=%.2f lineH=%.2f currentText=%.3f win=(%.1f,%.1f) settings=(%.1f,%.1f) modal=(%.1f,%.1f) actualWin=(%.1f,%.1f) %s",
+        tostring(tag),
+        tonumber(state.window.scale) or 0.0,
+        tonumber(state.window.xScale) or 0.0,
+        tonumber(state.window.yScale) or 0.0,
+        textScale,
+        metricsScale,
+        buttonTextScale,
+        buttonSizeXScale,
+        buttonSizeYScale,
+        fontPx,
+        baseFontPx,
+        textFontPx,
+        metricsFontPx,
+        buttonFontPx,
+        padX,
+        padY,
+        approxButtonH,
+        frameH,
+        frameHS,
+        lineH,
+        currentTextScale,
+        tonumber(state.window.width) or 0.0,
+        tonumber(state.window.height) or 0.0,
+        tonumber(state.window.widthSettings) or 0.0,
+        tonumber(state.window.heightSettings) or 0.0,
+        tonumber(state.window.widthModalConfirm) or 0.0,
+        tonumber(state.window.heightModalConfirm) or 0.0,
+        actualW,
+        actualH,
+        extra or ""
+    ));
 end
 
 local colorSavePending = false;
@@ -853,7 +975,7 @@ end
 
 local estimateButtonWidth;
 local uiActionButton;
-local ACTION_BTN_BOOST = 1.10;
+local ACTION_BTN_BOOST = 1.05;
 local SETTINGS_HEADER_TEXT_COLOR = { 1.0, 1.0, 0.54, 1.0 }; -- warn yellow
 local SETTINGS_HEADER_LINE_COLOR = { 0.24, 0.25, 0.27, 1.0 }; -- neutral gray
 local SETTINGS_HEADER_BTN_COLOR = { 0.24, 0.25, 0.27, 1.0 };
@@ -997,46 +1119,66 @@ local function renderSettingsTitleBar(title, gatherSelected, onGatherSelect, gat
         end
     end
 
-    local text = tostring(title or "");
-    local textW = imgui.CalcTextSize(text);
-    if type(textW) == "table" and textW.x ~= nil then
-        textW = tonumber(textW.x) or 0.0;
+    local titleText = tostring(title or "");
+    local titleW = imgui.CalcTextSize(titleText);
+    if type(titleW) == "table" and titleW.x ~= nil then
+        titleW = tonumber(titleW.x) or 0.0;
     end
-    local textX = rowX + rowAvail - (tonumber(textW) or 0.0);
-    if textX < cursorX then textX = cursorX; end
 
-    imgui.SetCursorPosX(textX);
-    imgui.SetCursorPosY(rowY);
-    imgui.TextColored(SETTINGS_HEADER_TEXT_COLOR, text);
-
-    imgui.EndMenuBar();
-    imgui.PopStyleVar();
-    setWindowFontScale(prevScale);
-    imgui.Spacing();
-end
-
-local function renderSettingsPageStatusRow()
-    local statusRowH = math.max(imgui.GetTextLineHeightWithSpacing(), (state.window.scale or 1.0) * 18.0);
-    local rowStartY = imgui.GetCursorPosY();
+    local statusText = nil;
+    local statusColor = nil;
     if state.values.settingsStatusText ~= nil and state.values.settingsStatusText ~= "" then
         if os.clock() <= (state.values.settingsStatusUntil or 0) then
-            local c = state.values.settingsStatusColor or { 0.77, 0.83, 0.80, 1.0 };
-            imgui.TextColored(c, state.values.settingsStatusText);
+            statusText = tostring(state.values.settingsStatusText);
+            statusColor = state.values.settingsStatusColor or { 0.77, 0.83, 0.80, 1.0 };
         else
             state.values.settingsStatusText = "";
         end
     end
-    local rowEndY = imgui.GetCursorPosY();
-    if (rowEndY - rowStartY) < statusRowH then
-        imgui.SetCursorPosY(rowStartY + statusRowH);
+
+    local sepText = " | ";
+    local sepW = imgui.CalcTextSize(sepText);
+    if type(sepW) == "table" and sepW.x ~= nil then
+        sepW = tonumber(sepW.x) or 0.0;
     end
-    imgui.Separator();
-    imgui.Spacing();
+
+    local statusW = 0.0;
+    if statusText ~= nil then
+        statusW = imgui.CalcTextSize(statusText);
+        if type(statusW) == "table" and statusW.x ~= nil then
+            statusW = tonumber(statusW.x) or 0.0;
+        end
+    end
+
+    local blockW = (tonumber(titleW) or 0.0);
+    if statusText ~= nil then
+        blockW = blockW + (tonumber(sepW) or 0.0) + (tonumber(statusW) or 0.0);
+    end
+    local blockX = rowX + rowAvail - blockW;
+    if blockX < cursorX then blockX = cursorX; end
+
+    imgui.SetCursorPosX(blockX);
+    imgui.SetCursorPosY(rowY);
+    if statusText ~= nil then
+        imgui.TextColored(statusColor, statusText);
+        imgui.SameLine(0.0, 0.0);
+        imgui.TextColored(SETTINGS_HEADER_TEXT_COLOR, sepText);
+        imgui.SameLine(0.0, 0.0);
+    end
+    imgui.TextColored(SETTINGS_HEADER_TEXT_COLOR, titleText);
+
+    imgui.EndMenuBar();
+    imgui.PopStyleVar();
+    setWindowFontScale(prevScale);
+end
+
+local function renderSettingsPageStatusRow()
+    -- Status now renders inline in renderSettingsTitleBar as "Status | Page".
 end
 
 uiActionButton = function(label)
     local h = imgui.GetFrameHeight();
-    local minW = 72.0;
+    local minW = 64.0;
     if state and state.window then
         local textScale = tonumber(state.window.buttonTextScale) or tonumber(state.window.textScale) or 1.0;
         local padY = 3.0 * (tonumber(state.window.buttonSizeYScale) or 1.0);
@@ -2105,6 +2247,12 @@ local function commitSettingsSnapshot()
     state.values.settingsUiSnapshotFingerprint = buildSettingsUiFingerprint();
 end
 
+local function clearTransientSettingsSelections()
+    state.values.colorSelectionsByGather = {};
+    state.values.soundSelectionsByGather = {};
+    state.values.reportSelectionsByGather = {};
+end
+
 local function hasPendingSettingsChanges()
     local snap = state.values.settingsSnapshot;
     if type(snap) ~= 'table' then
@@ -3095,6 +3243,7 @@ local SettingsWindow =
         local ok = trySaveSettings(context or 'settings_apply_button');
         if ok then
             commitSettingsSnapshot();
+            clearTransientSettingsSelections();
             setSettingsStatus("Saved settings.", { 0.39, 0.96, 0.13, 1.0 }, 2.0);
             return true;
         end
@@ -3145,13 +3294,13 @@ local SettingsWindow =
 
     Draw = function (self, title)
         local io = imgui.GetIO();
-        local width, height = fitWindowRect(state.window.widthSettings, state.window.heightSettings, io.DisplaySize.x, io.DisplaySize.y, 0.95);
+        local width, height = state.window.widthSettings, state.window.heightSettings;
         imgui.SetNextWindowSize({ width, height }, ImGuiCond.Always);
         if state.values.centerWindow then
             imgui.SetNextWindowPos({ io.DisplaySize.x * 0.5, io.DisplaySize.y * 0.5 }, ImGuiCond.Always, { 0.5, 0.5 });
             state.values.centerWindow = false;
         end
-        if (not imgui.Begin(title, uiVariables["var_SettingsVisible"], bit.bor(ImGuiWindowFlags.MenuBar, ImGuiWindowFlags.NoResize, ImGuiWindowFlags.NoCollapse))) then
+        if (not imgui.Begin(title, uiVariables["var_SettingsVisible"], bit.bor(ImGuiWindowFlags.MenuBar, ImGuiWindowFlags.NoResize, ImGuiWindowFlags.NoCollapse, ImGuiWindowFlags.NoScrollbar, ImGuiWindowFlags.NoScrollWithMouse))) then
             imgui.End();
             return;
         end
@@ -3188,42 +3337,85 @@ local SettingsWindow =
         end
         -- /SETTINGS_MENU
 
-        -- render settings pages..
-        imgui.BeginGroup();
-        imgui.Spacing();
-        switch(state.settings.activeIndex, {
-            [1] = function() renderSettingsGeneral() end,
-            [2] = function() renderSettingsSetPrices() end,
-            [3] = function() renderSettingsSetColors() end,
-            [4] = function() renderSettingsSetAlerts() end,
-            [5] = function() renderSettingsReports() end,
-            [6] = function() renderSettingsFeedback() end,
-            [7] = function() renderSettingsAbout() end,
-        })
-        imgui.EndGroup();
-
-        -- Recalculate
+        local activePage = tonumber(state.settings.activeIndex) or 1;
         local yieldsExist = table.count(metrics[state.settings.setPrices.gathering].yields) > 0;
-        if state.settings.activeIndex == 2 and yieldsExist then -- if we are setting prices
-            imgui.NewLine();
-            local spaceBtnRecalculate = state.window.spaceBtnRecalculate;
-            if settings.general.showToolTips then spaceBtnRecalculate = spaceBtnRecalculate - ( imgui.GetFontSize() * 24 / defaultFontSize ) end
-            imgui.SameLine(0.0, spaceBtnRecalculate);
-            if imguiShowToolTip("Recalculate the estimated value with your current price settings.", settings.general.showToolTips) then
-                imgui.SameLine(0.0, state.window.spaceToolTip);
+        local showRecalculate = (activePage == 2 and yieldsExist);
+        logScaleSnapshot("settings", string.format("page=%s", tostring(activePage)));
+
+        local function getAvailXY(avail, fallbackY)
+            if type(avail) == "table" and avail.x ~= nil then
+                local x = tonumber(avail.x) or 0.0;
+                local y = tonumber(avail.y) or (tonumber(fallbackY) or 0.0);
+                return x, y;
             end
-            if uiButtonCompact("Recalculate Value") then
-                updateAllStates(state.settings.setPrices.gathering);
-                metrics[state.gathering].estimatedValue = 0;
-                for yield, count in pairs(metrics[state.gathering].yields) do
-                    local price = getPrice(yield);
-                    metrics[state.gathering].estimatedValue = metrics[state.gathering].estimatedValue + (price * count);
-                end
-                imgui.SetVarValue(uiVariables[string.format("var_%s_estimatedValue", state.gathering)], metrics[state.gathering].estimatedValue);
-            end
+            local x = tonumber(avail) or 0.0;
+            local y = tonumber(fallbackY) or 0.0;
+            return x, y;
         end
 
-        local activePage = tonumber(state.settings.activeIndex) or 1;
+        -- Use a body child to keep the footer pinned like the primary window.
+        local footerReserve = imgui.GetFrameHeightWithSpacing();
+        local recalcReserve = showRecalculate and imgui.GetFrameHeightWithSpacing() or 0.0;
+
+        if imgui.BeginChild("SettingsBodyHost", { -1, -footerReserve }, false, bit.bor(ImGuiWindowFlags.NoScrollbar, ImGuiWindowFlags.NoScrollWithMouse)) then
+            local bodyFallbackY = math.max(0.0, (tonumber(imgui.GetWindowHeight()) or 0.0) - (tonumber(imgui.GetCursorPosY()) or 0.0) - (tonumber(state.window.padY) or 0.0));
+            local _, bodyAvailY = getAvailXY(imgui.GetContentRegionAvail(), bodyFallbackY);
+            state.window.heightSettingsContent = math.max((state.window.scale or 1.0) * 120.0, bodyAvailY - recalcReserve);
+            state.window.heightSettingsScroll = math.max((state.window.scale or 1.0) * 90.0, state.window.heightSettingsContent - (imgui.GetFrameHeightWithSpacing() * 1.2));
+
+            -- render settings pages..
+            imgui.BeginGroup();
+            switch(state.settings.activeIndex, {
+                [1] = function() renderSettingsGeneral() end,
+                [2] = function() renderSettingsSetPrices() end,
+                [3] = function() renderSettingsSetColors() end,
+                [4] = function() renderSettingsSetAlerts() end,
+                [5] = function() renderSettingsReports() end,
+                [6] = function() renderSettingsFeedback() end,
+                [7] = function() renderSettingsAbout() end,
+            })
+            imgui.EndGroup();
+
+            -- Purpose: let users recompute estimated value immediately after price edits.
+            if showRecalculate then
+                imgui.Spacing();
+                local rowX = imgui.GetCursorPosX();
+                local rowY = imgui.GetCursorPosY();
+                local rowAvailX = select(1, getAvailXY(imgui.GetContentRegionAvail(), 0.0));
+                local btnLabel = "Recalculate Value";
+                local btnW = estimateButtonWidth(btnLabel, true);
+                if btnW == nil or btnW <= 0 then
+                    btnW = estimateHeaderActionWidth(btnLabel);
+                end
+                local btnX = rowX + (tonumber(rowAvailX) or 0.0) - (tonumber(btnW) or 0.0);
+                if btnX < rowX then btnX = rowX; end
+
+                imgui.SetCursorPosX(rowX);
+                imgui.SetCursorPosY(rowY);
+                imgui.AlignTextToFramePadding();
+                imgui.TextColored(SETTINGS_HEADER_TEXT_COLOR, "Recalculate");
+
+                imgui.SetCursorPosX(btnX);
+                imgui.SetCursorPosY(rowY);
+                if uiButtonCompact(btnLabel) then
+                    updateAllStates(state.settings.setPrices.gathering);
+                    metrics[state.gathering].estimatedValue = 0;
+                    for yield, count in pairs(metrics[state.gathering].yields) do
+                        local price = getPrice(yield);
+                        metrics[state.gathering].estimatedValue = metrics[state.gathering].estimatedValue + (price * count);
+                    end
+                    imgui.SetVarValue(uiVariables[string.format("var_%s_estimatedValue", state.gathering)], metrics[state.gathering].estimatedValue);
+                end
+                if settings.general.showToolTips and imgui.IsItemHovered() then
+                    imgui.SetTooltip("Recalculate the estimated value with your current price settings.");
+                end
+
+                local rowH = imgui.GetFrameHeightWithSpacing();
+                imgui.SetCursorPosY(rowY + rowH);
+            end
+        end
+        imgui.EndChild();
+
         local pageHasSettings = (activePage >= 1 and activePage <= 4);
         local isDirty = pageHasSettings and hasPendingSettingsChanges();
         local pageActionLabel = nil;
@@ -3233,112 +3425,135 @@ local SettingsWindow =
             pageActionLabel = "Generate";
         end
 
-        imgui.Separator();
-        local footerStartX = imgui.GetCursorPosX();
-        local footerStartY = imgui.GetCursorPosY();
-        local footerAvail = imgui.GetContentRegionAvail();
-        if type(footerAvail) == "table" and footerAvail.x ~= nil then
-            footerAvail = tonumber(footerAvail.x) or 0.0;
-        end
-        local footerSpacing = state.window.spaceSettingsBtn or 6.0;
+        local function renderSettingsFooter(footerStartX, footerStartY, footerAvail, footerOpenedFlag)
+            local footerAvailX, footerAvailY = getAvailXY(footerAvail, footerReserve);
+            local footerSpacing = state.window.spaceSettingsBtn or 6.0;
+            local footerRowY = footerStartY + math.max(0.0, (footerAvailY - imgui.GetFrameHeight()));
 
-        -- Left group: Done or Save/Cancel
-        imgui.SetCursorPosX(footerStartX);
-        imgui.SetCursorPosY(footerStartY);
-        if pageHasSettings and isDirty then
-            if uiActionButton("Save") then
-                writeDebugLog(string.format('settings footer click Save page=%s dirty=%s', tostring(activePage), tostring(isDirty)));
-                self:modalApplyAction('settings_save_button');
+            local now = os.clock();
+            state.values.settingsFooterLogAt = state.values.settingsFooterLogAt or 0;
+            if (now - state.values.settingsFooterLogAt) >= 1.0 then
+                state.values.settingsFooterLogAt = now;
+                writeDebugLog(string.format("settings_footer page=%s dirty=%s scale=%.2f open=%s reserve=%.1f start=(%.1f,%.1f) avail=(%.1f,%.1f) rowY=%.1f",
+                    tostring(activePage), tostring(isDirty), tonumber(state.window.scale) or 0.0, tostring(footerOpenedFlag), tonumber(footerReserve) or 0.0,
+                    tonumber(footerStartX) or 0.0, tonumber(footerStartY) or 0.0,
+                    tonumber(footerAvailX) or 0.0, tonumber(footerAvailY) or 0.0,
+                    tonumber(footerRowY) or 0.0));
             end
-            imgui.SameLine(0.0, footerSpacing);
-            if uiActionButton("Cancel") then
-                writeDebugLog(string.format('settings footer click Cancel page=%s dirty=%s', tostring(activePage), tostring(isDirty)));
-                self:modalCancelAction(true, true);
+
+            -- Left group: Done or Save/Cancel
+            imgui.SetCursorPosX(footerStartX);
+            imgui.SetCursorPosY(footerRowY);
+            if pageHasSettings and isDirty then
+                if uiActionButton("Save") then
+                    writeDebugLog(string.format('settings footer click Save page=%s dirty=%s', tostring(activePage), tostring(isDirty)));
+                    self:modalApplyAction('settings_save_button');
+                end
+                imgui.SameLine(0.0, footerSpacing);
+                if uiActionButton("Cancel") then
+                    writeDebugLog(string.format('settings footer click Cancel page=%s dirty=%s', tostring(activePage), tostring(isDirty)));
+                    self:modalCancelAction(true, true);
+                end
+            else
+                if uiActionButton("Done") then
+                    writeDebugLog(string.format('settings footer click Done page=%s dirty=%s', tostring(activePage), tostring(isDirty)));
+                    if pageHasSettings then
+                        local ok = trySaveSettings('settings_done_close', true);
+                        writeDebugLog(string.format('settings Done pre-close save ok=%s', tostring(ok)));
+                        if ok then
+                            commitSettingsSnapshot();
+                        end
+                    end
+                    state.values.settingsSnapshot = nil;
+                    state.values.settingsUiSnapshotFingerprint = nil;
+                    imgui.SetVarValue(uiVariables["var_SettingsVisible"], false);
+                end
             end
-        else
-            if uiActionButton("Done") then
-                writeDebugLog(string.format('settings footer click Done page=%s dirty=%s', tostring(activePage), tostring(isDirty)));
-                if pageHasSettings then
-                    local ok = trySaveSettings('settings_done_close', true);
-                    writeDebugLog(string.format('settings Done pre-close save ok=%s', tostring(ok)));
-                    if ok then
-                        commitSettingsSnapshot();
+
+            -- Right group: page action
+            if pageActionLabel ~= nil then
+                local rightW = estimateHeaderActionWidth(pageActionLabel);
+                local rightX = footerStartX + footerAvailX - rightW;
+                if rightX < footerStartX then rightX = footerStartX; end
+                imgui.SetCursorPosX(rightX);
+                imgui.SetCursorPosY(footerRowY);
+            end
+
+            if pageActionLabel == "Use Defaults" then
+                if uiActionButton("Use Defaults") then
+                    if activePage == 1 then
+                        openConfirmModal(
+                            "reset General settings to defaults",
+                            "(Current General settings will be lost.)",
+                            true,
+                            function()
+                                applyGeneralDefaults();
+                            end
+                        );
+                    elseif activePage == 2 then
+                        local gathering = state.settings.setPrices.gathering;
+                        openConfirmModal(
+                            string.format("reset %s prices to defaults", string.upperfirst(gathering)),
+                            "(Current price values for this gathering type will be lost.)",
+                            true,
+                            function()
+                                applyPricesDefaults(gathering);
+                            end
+                        );
+                    elseif activePage == 3 then
+                        local gathering = state.settings.setColors.gathering;
+                        openConfirmModal(
+                            string.format("reset %s yield colors to defaults", string.upperfirst(gathering)),
+                            "(Current color settings for this gathering type will be lost.)",
+                            true,
+                            function()
+                                applyColorsDefaults(gathering);
+                            end
+                        );
+                    elseif activePage == 4 then
+                        local gathering = state.settings.setAlerts.gathering;
+                        openConfirmModal(
+                            string.format("reset %s alerts to defaults", string.upperfirst(gathering)),
+                            "(Current sound alert settings for this gathering type will be lost.)",
+                            true,
+                            function()
+                                applyAlertsDefaults(gathering);
+                            end
+                        );
                     end
                 end
-                state.values.settingsSnapshot = nil;
-                state.values.settingsUiSnapshotFingerprint = nil;
-                imgui.SetVarValue(uiVariables["var_SettingsVisible"], false);
-            end
-        end
-
-        -- Right group: page action
-        if pageActionLabel ~= nil then
-            local rightW = estimateHeaderActionWidth(pageActionLabel);
-            local rightX = footerStartX + (tonumber(footerAvail) or 0.0) - rightW;
-            if rightX < footerStartX then rightX = footerStartX; end
-            imgui.SetCursorPosX(rightX);
-            imgui.SetCursorPosY(footerStartY);
-        end
-
-        if pageActionLabel == "Use Defaults" then
-            if uiActionButton("Use Defaults") then
-                if activePage == 1 then
-                    openConfirmModal(
-                        "reset General settings to defaults",
-                        "(Current General settings will be lost.)",
-                        true,
-                        function()
-                            applyGeneralDefaults();
-                        end
-                    );
-                elseif activePage == 2 then
-                    local gathering = state.settings.setPrices.gathering;
-                    openConfirmModal(
-                        string.format("reset %s prices to defaults", string.upperfirst(gathering)),
-                        "(Current price values for this gathering type will be lost.)",
-                        true,
-                        function()
-                            applyPricesDefaults(gathering);
-                        end
-                    );
-                elseif activePage == 3 then
-                    local gathering = state.settings.setColors.gathering;
-                    openConfirmModal(
-                        string.format("reset %s yield colors to defaults", string.upperfirst(gathering)),
-                        "(Current color settings for this gathering type will be lost.)",
-                        true,
-                        function()
-                            applyColorsDefaults(gathering);
-                        end
-                    );
-                elseif activePage == 4 then
-                    local gathering = state.settings.setAlerts.gathering;
-                    openConfirmModal(
-                        string.format("reset %s alerts to defaults", string.upperfirst(gathering)),
-                        "(Current sound alert settings for this gathering type will be lost.)",
-                        true,
-                        function()
-                            applyAlertsDefaults(gathering);
-                        end
-                    );
+                if settings.general.showToolTips and imgui.IsItemHovered() then
+                    imgui.SetTooltip("Reset this settings page to default values.");
                 end
-            end
-            if settings.general.showToolTips and imgui.IsItemHovered() then
-                imgui.SetTooltip("Reset this settings page to default values.");
-            end
-        elseif pageActionLabel == "Generate" then
-            local generateDisabled = imguiPushDisabled(state.values.genReportDisabled);
-            if uiActionButton("Generate") then
-                if not generateDisabled then
-                    generateReportsFromFooter();
+            elseif pageActionLabel == "Generate" then
+                local generateDisabled = imguiPushDisabled(state.values.genReportDisabled);
+                if uiActionButton("Generate") then
+                    if not generateDisabled then
+                        generateReportsFromFooter();
+                    end
                 end
+                if settings.general.showToolTips and imgui.IsItemHovered() then
+                    imgui.SetTooltip(string.format("Manually generate a %s report using its current yield data.", string.upperfirst(state.settings.reports.gathering)));
+                end
+                imguiPopDisabled(generateDisabled);
             end
-            if settings.general.showToolTips and imgui.IsItemHovered() then
-                imgui.SetTooltip(string.format("Manually generate a %s report using its current yield data.", string.upperfirst(state.settings.reports.gathering)));
-            end
-            imguiPopDisabled(generateDisabled);
         end
 
+        local footerOpened = imgui.BeginChild("SettingsFooterRow", { -1, footerReserve }, false, bit.bor(ImGuiWindowFlags.NoScrollbar, ImGuiWindowFlags.NoScrollWithMouse));
+        if footerOpened then
+            local footerStartX = imgui.GetCursorPosX();
+            local footerStartY = imgui.GetCursorPosY();
+            local footerAvail = imgui.GetContentRegionAvail();
+            renderSettingsFooter(footerStartX, footerStartY, footerAvail, true);
+        end
+        imgui.EndChild();
+
+        if not footerOpened then
+            local footerStartX = imgui.GetCursorPosX();
+            local footerStartY = imgui.GetCursorPosY();
+            local footerAvail = imgui.GetContentRegionAvail();
+            renderSettingsFooter(footerStartX, footerStartY, footerAvail, false);
+        end
         if state.initializing then
             imgui.SetVarValue(uiVariables["var_SettingsVisible"], false);
             imgui.SetVarValue(uiVariables["var_HelpVisible"], false);
@@ -3351,13 +3566,14 @@ local SettingsWindow =
             state.values.scaleTuningIgnoreClickAway = true;
             state.values.openScaleTuningRequested = false;
         end
-        local tuningWidth, tuningHeight = fitWindowRect(state.window.widthSettings * 0.80, state.window.heightSettings * 0.72, io.DisplaySize.x, io.DisplaySize.y, 0.90);
+        local tuningWidth, tuningHeight = state.window.widthSettings * 0.80, state.window.heightSettings * 0.72;
         local tuningX = (io.DisplaySize.x * 0.5) - (tuningWidth * 0.5);
         local tuningY = (io.DisplaySize.y * 0.5) - (tuningHeight * 0.5);
         imgui.SetNextWindowSize({ tuningWidth, tuningHeight }, ImGuiCond.Always);
         imgui.SetNextWindowPos({ io.DisplaySize.x * 0.5, io.DisplaySize.y * 0.5 }, ImGuiCond.Always, { 0.5, 0.5 });
         if imgui.BeginPopupModal("Scale Tuning", uiVariables["var_SettingsVisible"], bit.bor(ImGuiWindowFlags.NoResize, ImGuiWindowFlags.NoCollapse)) then
             setWindowFontScale(state.window.textScale);
+            logScaleSnapshot("scale_tuning", "");
             local closeScaleTuning = false;
             imgui.Text("Tune global scaling behavior.");
             imgui.Text("Changes preview live while this modal is open.");
@@ -3517,7 +3733,7 @@ local helpWindow =
 {
     Draw = function (self, title)
         local io = imgui.GetIO();
-        local width, height = fitWindowRect(state.window.widthSettings, state.window.heightSettings, io.DisplaySize.x, io.DisplaySize.y, 0.95);
+        local width, height = state.window.widthSettings, state.window.heightSettings;
         imgui.SetNextWindowSize({ width, height }, ImGuiCond.Always);
         if state.values.centerWindow then
             imgui.SetNextWindowPos({ io.DisplaySize.x * 0.5, io.DisplaySize.y * 0.5 }, ImGuiCond.Always, { 0.5, 0.5 });
@@ -3529,6 +3745,7 @@ local helpWindow =
         end
         imgui.PushStyleColor(ImGuiCol_Text, { 0.77, 0.83, 0.80, 1.0 });
         setWindowFontScale(state.window.textScale);
+        logScaleSnapshot("help", "");
 
         -- HELP_MENU
         if imgui.BeginMenuBar() then
@@ -3661,8 +3878,8 @@ ashita.events.register('d3d_present', 'yield_render', function()
         spaceFooterBtn        = sx(3.0),
         widthSettings         = sx(500.0),
         heightSettings        = sy(450.0),
-        heightSettingsContent = sy(367.0),
-        heightSettingsScroll  = sy(343.0),
+        heightSettingsContent = sy(390.0),
+        heightSettingsScroll  = sy(366.0),
         spacePriceModeRadio   = sx(26.0),
         spacePriceDefaults    = sx(177.0),
         spaceEstimatedValue   = sx(12.0),
@@ -3685,6 +3902,7 @@ ashita.events.register('d3d_present', 'yield_render', function()
     }
 
     setWindowFontScale(state.window.textScale);
+    logScaleSnapshot("main", "");
 
 
     if getPlayerName() ~= "" and not state.reportsLoaded then
@@ -4421,7 +4639,7 @@ ashita.events.register('d3d_present', 'yield_render', function()
 
     -- CONFIRM
     local io = imgui.GetIO();
-    local modalWidth, modalHeight = fitWindowRect(state.window.widthModalConfirm, state.window.heightModalConfirm, io.DisplaySize.x, io.DisplaySize.y, 0.90);
+    local modalWidth, modalHeight = state.window.widthModalConfirm, state.window.heightModalConfirm;
     local modalX = (io.DisplaySize.x * 0.5) - (modalWidth * 0.5);
     local modalY = (io.DisplaySize.y * 0.5) - (modalHeight * 0.5);
     imgui.SetNextWindowSize({ modalWidth, modalHeight }, ImGuiCond.Always)
@@ -4434,6 +4652,7 @@ ashita.events.register('d3d_present', 'yield_render', function()
     imgui.PushStyleVar(ImGuiStyleVar.Alpha, 1.0);
     if imgui.BeginPopupModal("Yield Confirm", imgui.GetVarValue(uiVariables['var_WindowVisible']), bit.bor(ImGuiWindowFlags.NoResize, ImGuiWindowFlags.NoCollapse)) then
         setWindowFontScale(state.window.textScale);
+        logScaleSnapshot("confirm", "");
         local handledByButton = false;
         imgui.Text(state.values.modalConfirmPrompt);
         imgui.Spacing();
@@ -4756,7 +4975,7 @@ function renderSettingsSetPrices()
     local gathering = state.settings.setPrices.gathering
 
     if imgui.BeginChild("Set Prices", { -1, state.window.heightSettingsContent }, imgui.GetVarValue(uiVariables['var_WindowVisible']), bit.bor(ImGuiWindowFlags.MenuBar, ImGuiWindowFlags.NoResize)) then
-        setWindowFontScale(state.window.textScale);
+        logScaleSnapshot("settings_prices_begin", "");
         local gatherBtnBoost = 1.18;
         local btnAction = function(data)
             runSafe(string.format('setPrices_btnAction_%s', tostring(data and data.name)), function()
@@ -4770,7 +4989,7 @@ function renderSettingsSetPrices()
         -- Columns
         imgui.SetCursorPosX(0);
         if imgui.BeginChild("Column Names", { imgui.GetWindowWidth(), state.window.heightPriceColumns }) then
-            setWindowFontScale(state.window.textScale);
+            logScaleSnapshot("settings_prices_columns", "");
             local colGap = 4.0;
             local totalW = state.window.widthWidgetDefault;
             local colW = math.max(48.0, (totalW - (colGap * 2.0)) / 3.0);
@@ -4795,9 +5014,9 @@ function renderSettingsSetPrices()
         -- /Columns
         imgui.Separator();
         imgui.Spacing();
-        local footerReserve = imgui.GetFrameHeightWithSpacing() + (state.window.scale * 10.0);
-        if imgui.BeginChild("Scrolling", { -1, -footerReserve }) then
-            setWindowFontScale(state.window.textScale);
+        -- Outer settings footer is now pinned; no internal reserve needed here.
+        if imgui.BeginChild("Scrolling", { -1, 0 }) then
+            logScaleSnapshot("settings_prices_list", "");
             for i, yield in pairs(table.sortKeysByAlphabet(settings.yields[gathering], true)) do
                 local data = settings.yields[gathering][yield];
                  if data.id ~= nil then
@@ -4869,6 +5088,7 @@ function renderSettingsSetColors()
     local selectedColors = state.values.colorSelectionsByGather[gathering];
     if imgui.BeginChild("Set Colors", { -1, state.window.heightSettingsContent }, imgui.GetVarValue(uiVariables['var_WindowVisible']), bit.bor(ImGuiWindowFlags.MenuBar, ImGuiWindowFlags.NoResize)) then
         setWindowFontScale(state.window.textScale);
+        logScaleSnapshot("settings_colors_begin", "");
         local gatherBtnBoost = 1.18;
         local btnAction = function(data)
             runSafe(string.format('setColors_btnAction_%s', tostring(data and data.name)), function()
@@ -4881,7 +5101,6 @@ function renderSettingsSetColors()
         end
         renderSettingsTitleBar("Colors", gathering, btnAction, gatherBtnBoost);
         renderSettingsPageStatusRow();
-        imgui.Spacing();
         local sortedYields = table.sortKeysByAlphabet(settings.yields[gathering], true);
         local selectedCount = 0;
         for _, yName in ipairs(sortedYields) do
@@ -4889,6 +5108,7 @@ function renderSettingsSetColors()
                 selectedCount = selectedCount + 1;
             end
         end
+        logScaleSnapshot("settings_colors_list", "");
         local allSelected = (#sortedYields > 0 and selectedCount == #sortedYields);
         local selectAllVar = { allSelected };
         if imgui.Checkbox("##set_colors_select_all", selectAllVar) then
@@ -4993,7 +5213,6 @@ function renderSettingsSetAlerts()
         end
         renderSettingsTitleBar("Alerts", gathering, btnAction, gatherBtnBoost);
         renderSettingsPageStatusRow();
-        imgui.Spacing();
         local sortedYields = table.sortKeysByAlphabet(settings.yields[gathering], true);
         local defs = eventAlertDefs[gathering] or {};
         local soundTargets = {};
@@ -5215,7 +5434,7 @@ function renderSettingsReports()
     local sortedReports = table.sortReportsByDate(reports[gathering], true);
     imgui.PushStyleVar(ImGuiStyleVar.WindowPadding, { 5, 5 });
     if imgui.BeginChild("Reports", { -1, state.window.heightSettingsContent }, imgui.GetVarValue(uiVariables['var_WindowVisible']), bit.bor(ImGuiWindowFlags.MenuBar, ImGuiWindowFlags.NoResize)) then
-        setWindowFontScale(state.window.textScale);
+        logScaleSnapshot("settings_reports_begin", "");
         local gatherBtnBoost = 1.18;
         local btnAction = function(data)
             runSafe(string.format('reports_btnAction_%s', tostring(data and data.name)), function()
@@ -5230,7 +5449,6 @@ function renderSettingsReports()
         end
         renderSettingsTitleBar("Reports", gathering, btnAction, gatherBtnBoost);
         renderSettingsPageStatusRow();
-        imgui.Spacing();
         if state.values.reportsStatusText ~= nil and state.values.reportsStatusText ~= "" then
             imgui.TextColored({ 0.67, 0.93, 0.67, 1 }, state.values.reportsStatusText);
             imgui.Separator();
@@ -5274,7 +5492,7 @@ function renderSettingsReports()
         end
         local listHeight = state.values.reportsListHeight;
         if imgui.BeginChild("Report List", { imgui.GetWindowWidth(), listHeight }, true) then
-            setWindowFontScale(state.window.textScale);
+            logScaleSnapshot("settings_reports_list", "");
             imgui.PushTextWrapPos(imgui.GetContentRegionAvail());
             if state.values.forceReportListTop then
                 if imgui.SetScrollY ~= nil then
@@ -5461,9 +5679,9 @@ function renderSettingsReports()
 
         imgui.SetCursorPosX(0);
         imgui.PushStyleColor(ImGuiCol.Border, { 0, 0, 0, 0 });
-        local reportsFooterReserve = imgui.GetFrameHeightWithSpacing() + (state.window.scale * 10.0);
-        if imgui.BeginChild("Read Report", { imgui.GetWindowWidth(), -reportsFooterReserve }, true) then
-            setWindowFontScale(state.window.textScale);
+        -- Outer settings footer is now pinned; no internal reserve needed here.
+        if imgui.BeginChild("Read Report", { imgui.GetWindowWidth(), 0 }, true) then
+            logScaleSnapshot("settings_reports_read", "");
             imgui.PushTextWrapPos(imgui.GetContentRegionAvail());
             local fname = state.values.currentReportName;
             if fname ~= nil then
@@ -5506,7 +5724,6 @@ function renderSettingsFeedback()
         setWindowFontScale(state.window.textScale);
         renderSettingsTitleBar("Feedback");
         renderSettingsPageStatusRow();
-        imgui.Spacing();
         local hasTitle = imgui.GetVarValue(uiVariables["var_IssueTitle"]):len() > 0;
         local hasBody = imgui.GetVarValue(uiVariables["var_IssueBody"]):len() > 0;
         local msg = "I hope you are enjoying Yield!"
@@ -5598,7 +5815,6 @@ function renderSettingsAbout()
         setWindowFontScale(state.window.textScale);
         renderSettingsTitleBar("About");
         renderSettingsPageStatusRow();
-        imgui.Spacing();
         imgui.PushTextWrapPos(imgui.GetContentRegionAvail());
         imgui.TextColored({ 1, 1, 0.54, 1 }, "Name:"); imgui.Text(string.format("%s by Lotekkie", _addon.name));
         imgui.Spacing();
@@ -5728,6 +5944,3 @@ function renderHelpQsAndAs()
         imgui.EndChild();
     end
 end
-
-
-
