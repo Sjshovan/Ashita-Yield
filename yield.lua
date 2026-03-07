@@ -975,7 +975,7 @@ end
 
 local estimateButtonWidth;
 local uiActionButton;
-local ACTION_BTN_BOOST = 1.05;
+local ACTION_BTN_BOOST = 1.00;
 local SETTINGS_HEADER_TEXT_COLOR = { 1.0, 1.0, 0.54, 1.0 }; -- warn yellow
 local SETTINGS_HEADER_LINE_COLOR = { 0.24, 0.25, 0.27, 1.0 }; -- neutral gray
 local SETTINGS_HEADER_BTN_COLOR = { 0.24, 0.25, 0.27, 1.0 };
@@ -3354,7 +3354,19 @@ local SettingsWindow =
         end
 
         -- Use a body child to keep the footer pinned like the primary window.
-        local footerReserve = imgui.GetFrameHeightWithSpacing();
+        local function calcSettingsFooterButtonHeight()
+            local h = imgui.GetFrameHeight();
+            if state and state.window then
+                local textScale = tonumber(state.window.buttonTextScale) or tonumber(state.window.textScale) or 1.0;
+                local padY = 3.0 * (tonumber(state.window.buttonSizeYScale) or 1.0);
+                local fontPx = (tonumber(defaultFontSize) or imgui.GetFontSize() or 12.0) * textScale;
+                h = math.max(h, fontPx + (padY * 2.0));
+            end
+            return h;
+        end
+        local footerButtonHeight = calcSettingsFooterButtonHeight();
+        local footerBottomPad = math.max(4.0, (tonumber(state.window.scale) or 1.0) * 2.0);
+        local footerReserve = math.max(imgui.GetFrameHeightWithSpacing(), footerButtonHeight + math.max(2.0, tonumber(state.window.scale) or 1.0) + footerBottomPad);
         local recalcReserve = showRecalculate and imgui.GetFrameHeightWithSpacing() or 0.0;
 
         if imgui.BeginChild("SettingsBodyHost", { -1, -footerReserve }, false, bit.bor(ImGuiWindowFlags.NoScrollbar, ImGuiWindowFlags.NoScrollWithMouse)) then
@@ -3428,14 +3440,15 @@ local SettingsWindow =
         local function renderSettingsFooter(footerStartX, footerStartY, footerAvail, footerOpenedFlag)
             local footerAvailX, footerAvailY = getAvailXY(footerAvail, footerReserve);
             local footerSpacing = state.window.spaceSettingsBtn or 6.0;
-            local footerRowY = footerStartY + math.max(0.0, (footerAvailY - imgui.GetFrameHeight()));
+            local footerRowY = footerStartY + math.max(0.0, (footerAvailY - footerButtonHeight - footerBottomPad));
 
             local now = os.clock();
             state.values.settingsFooterLogAt = state.values.settingsFooterLogAt or 0;
             if (now - state.values.settingsFooterLogAt) >= 1.0 then
                 state.values.settingsFooterLogAt = now;
-                writeDebugLog(string.format("settings_footer page=%s dirty=%s scale=%.2f open=%s reserve=%.1f start=(%.1f,%.1f) avail=(%.1f,%.1f) rowY=%.1f",
+                writeDebugLog(string.format("settings_footer page=%s dirty=%s scale=%.2f open=%s reserve=%.1f btnH=%.1f bottomPad=%.1f start=(%.1f,%.1f) avail=(%.1f,%.1f) rowY=%.1f",
                     tostring(activePage), tostring(isDirty), tonumber(state.window.scale) or 0.0, tostring(footerOpenedFlag), tonumber(footerReserve) or 0.0,
+                    tonumber(footerButtonHeight) or 0.0, tonumber(footerBottomPad) or 0.0,
                     tonumber(footerStartX) or 0.0, tonumber(footerStartY) or 0.0,
                     tonumber(footerAvailX) or 0.0, tonumber(footerAvailY) or 0.0,
                     tonumber(footerRowY) or 0.0));
@@ -3445,17 +3458,17 @@ local SettingsWindow =
             imgui.SetCursorPosX(footerStartX);
             imgui.SetCursorPosY(footerRowY);
             if pageHasSettings and isDirty then
-                if uiActionButton("Save") then
+                if uiButton("Save") then
                     writeDebugLog(string.format('settings footer click Save page=%s dirty=%s', tostring(activePage), tostring(isDirty)));
                     self:modalApplyAction('settings_save_button');
                 end
                 imgui.SameLine(0.0, footerSpacing);
-                if uiActionButton("Cancel") then
+                if uiButton("Cancel") then
                     writeDebugLog(string.format('settings footer click Cancel page=%s dirty=%s', tostring(activePage), tostring(isDirty)));
                     self:modalCancelAction(true, true);
                 end
             else
-                if uiActionButton("Done") then
+                if uiButton("Done") then
                     writeDebugLog(string.format('settings footer click Done page=%s dirty=%s', tostring(activePage), tostring(isDirty)));
                     if pageHasSettings then
                         local ok = trySaveSettings('settings_done_close', true);
@@ -3472,7 +3485,7 @@ local SettingsWindow =
 
             -- Right group: page action
             if pageActionLabel ~= nil then
-                local rightW = estimateHeaderActionWidth(pageActionLabel);
+                local rightW = estimateButtonWidth(pageActionLabel, false);
                 local rightX = footerStartX + footerAvailX - rightW;
                 if rightX < footerStartX then rightX = footerStartX; end
                 imgui.SetCursorPosX(rightX);
@@ -3480,7 +3493,7 @@ local SettingsWindow =
             end
 
             if pageActionLabel == "Use Defaults" then
-                if uiActionButton("Use Defaults") then
+                if uiButton("Use Defaults") then
                     if activePage == 1 then
                         openConfirmModal(
                             "reset General settings to defaults",
@@ -3527,7 +3540,7 @@ local SettingsWindow =
                 end
             elseif pageActionLabel == "Generate" then
                 local generateDisabled = imguiPushDisabled(state.values.genReportDisabled);
-                if uiActionButton("Generate") then
+                if uiButton("Generate") then
                     if not generateDisabled then
                         generateReportsFromFooter();
                     end
@@ -3537,6 +3550,11 @@ local SettingsWindow =
                 end
                 imguiPopDisabled(generateDisabled);
             end
+
+            -- Keep one spacer line under the footer button row to avoid clipping.
+            imgui.SetCursorPosX(footerStartX);
+            imgui.SetCursorPosY(footerRowY + footerButtonHeight);
+            imgui.Spacing();
         end
 
         local footerOpened = imgui.BeginChild("SettingsFooterRow", { -1, footerReserve }, false, bit.bor(ImGuiWindowFlags.NoScrollbar, ImGuiWindowFlags.NoScrollWithMouse));
