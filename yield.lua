@@ -1095,7 +1095,13 @@ local function renderSettingsTitleBar(title, gatherSelected, onGatherSelect, gat
     local headerScale = (state and state.window and state.window.textScale) or 1.0;
     local padX = 4.0 * ((state and state.window and tonumber(state.window.buttonSizeXScale)) or 1.0);
     local padY = 3.0 * ((state and state.window and tonumber(state.window.buttonSizeYScale)) or 1.0);
-    imgui.PushStyleVar(ImGuiStyleVar.FramePadding, { padX, padY });
+    local menuPadY = padY;
+    if gatherSelected ~= nil and type(onGatherSelect) == "function" then
+        -- Slightly taller colored row for gather-button pages so boosted controls are not clipped.
+        local scale = (state and state.window and tonumber(state.window.scale)) or 1.0;
+        menuPadY = menuPadY + math.max(1.0, scale * 0.75);
+    end
+    imgui.PushStyleVar(ImGuiStyleVar.FramePadding, { padX, menuPadY });
     if not imgui.BeginMenuBar() then
         imgui.PopStyleVar();
         return;
@@ -3550,7 +3556,9 @@ local SettingsWindow =
                 local btnName = navLabels[i];
                 imgui.SetCursorPosX(navPositions[i] or rowStartX);
                 imgui.SetCursorPosY(rowStartY);
-                imguiPushActiveBtnColor(state.settings.activeIndex == i);
+                local isSelected = (state.settings.activeIndex == i);
+                pushSelectedBorderStyle(isSelected);
+                imguiPushActiveBtnColor(isSelected);
                 if uiButton(btnName) then
                    state.settings.activeIndex = i;
                    state.values.feedbackSubmitted = false;
@@ -3558,7 +3566,8 @@ local SettingsWindow =
                    imgui.SetVarValue(uiVariables["var_IssueTitle"], "");
                    imgui.SetVarValue(uiVariables["var_IssueBody"], "")
                 end
-                imgui.PopStyleColor();
+                imgui.PopStyleColor(2);
+                imgui.PopStyleVar();
             end
             imgui.EndMenuBar();
         end
@@ -3571,9 +3580,10 @@ local SettingsWindow =
 
         -- Use a body child to keep the footer pinned like the primary window.
         local footerButtonHeight, footerSymPad, footerBottomPadTarget, footerReserve = calcFooterMetrics();
+        local settingsFooterReserve = math.ceil(tonumber(footerReserve) or 0.0);
         local recalcReserve = showRecalculate and imgui.GetFrameHeightWithSpacing() or 0.0;
 
-        if imgui.BeginChild("SettingsBodyHost", { -1, -footerReserve }, false, bit.bor(ImGuiWindowFlags.NoScrollbar, ImGuiWindowFlags.NoScrollWithMouse)) then
+        if imgui.BeginChild("SettingsBodyHost", { -1, -settingsFooterReserve }, false, bit.bor(ImGuiWindowFlags.NoScrollbar, ImGuiWindowFlags.NoScrollWithMouse)) then
             local bodyFallbackY = math.max(0.0, (tonumber(imgui.GetWindowHeight()) or 0.0) - (tonumber(imgui.GetCursorPosY()) or 0.0) - (tonumber(state.window.padY) or 0.0));
             local _, bodyAvailY = getAvailXY(imgui.GetContentRegionAvail(), bodyFallbackY);
             state.window.heightSettingsContent = math.max((state.window.scale or 1.0) * 120.0, bodyAvailY - recalcReserve);
@@ -3630,16 +3640,11 @@ local SettingsWindow =
                 imgui.SetCursorPosY(rowY + rowH);
             end
         end
+        -- Remove only the body->footer vertical item gap; keep footer geometry math unchanged.
+        local itemGapX = (state.window.ui and state.window.ui.space and tonumber(state.window.ui.space.sm)) or 0.0;
+        imgui.PushStyleVar(ImGuiStyleVar.ItemSpacing, { itemGapX, 0.0 });
         imgui.EndChild();
-
-        -- Remove default item spacing gap between settings body and footer so the body scrollbar
-        -- visually ends exactly where the footer begins.
-        local footerJoinTighten =
-            (state.window.ui and state.window.ui.space and tonumber(state.window.ui.space.sm)) or 0.0;
-        if footerJoinTighten > 0.0 then
-            local joinY = tonumber(imgui.GetCursorPosY()) or 0.0;
-            imgui.SetCursorPosY(math.max(0.0, joinY - footerJoinTighten - 1.0));
-        end
+        imgui.PopStyleVar();
 
         local pageHasSettings = (activePage >= 1 and activePage <= 4);
         local isDirty = pageHasSettings and hasPendingSettingsChanges();
@@ -3651,14 +3656,10 @@ local SettingsWindow =
         end
 
         local function renderSettingsFooter(footerStartX, footerStartY, footerAvail, footerOpenedFlag)
-            local footerAvailX, footerAvailY = getAvailXY(footerAvail, footerReserve);
+            local footerAvailX, footerAvailY = getAvailXY(footerAvail, settingsFooterReserve);
+            footerAvailY = math.max(0.0, math.min(tonumber(footerAvailY) or 0.0, tonumber(settingsFooterReserve) or 0.0));
             local footerSpacing = state.window.spaceSettingsBtn or 6.0;
             local footerRowOffset = math.max(0.0, (footerAvailY - footerButtonHeight) * 0.5);
-            -- Tiny visual trim: reduce perceived extra space under settings footer buttons.
-            footerRowOffset = math.min(
-                math.max(0.0, footerAvailY - footerButtonHeight),
-                footerRowOffset + 0.20
-            );
             local footerRowY = footerStartY + footerRowOffset;
             local footerTopPad = footerRowOffset;
             local footerBottomPad = math.max(0.0, footerAvailY - footerRowOffset - footerButtonHeight);
@@ -3684,7 +3685,7 @@ local SettingsWindow =
             if (now - state.values.settingsFooterLogAt) >= 1.0 then
                 state.values.settingsFooterLogAt = now;
                 writeDebugLog(string.format("settings_footer page=%s dirty=%s scale=%.2f open=%s reserve=%.1f btnH=%.1f symPad=%.1f topPad=%.1f bottomPad=%.1f rightW=%.1f rightX=%.1f rightInset=%.1f start=(%.1f,%.1f) avail=(%.1f,%.1f) rowY=%.1f",
-                    tostring(activePage), tostring(isDirty), tonumber(state.window.scale) or 0.0, tostring(footerOpenedFlag), tonumber(footerReserve) or 0.0,
+                    tostring(activePage), tostring(isDirty), tonumber(state.window.scale) or 0.0, tostring(footerOpenedFlag), tonumber(settingsFooterReserve) or 0.0,
                     tonumber(footerButtonHeight) or 0.0, tonumber(footerSymPad) or 0.0,
                     tonumber(footerTopPad) or 0.0, tonumber(footerBottomPad) or 0.0,
                     tonumber(rightWLog) or 0.0, tonumber(rightXLog) or 0.0, tonumber(rightInsetLog) or 0.0,
@@ -3698,7 +3699,7 @@ local SettingsWindow =
             imgui.SetCursorPosY(footerRowY);
             if pageHasSettings and isDirty then
                 local savePressed = footerButton("Save");
-                logFooterItemRect("settings_left", "Save", footerRowY, footerReserve);
+                logFooterItemRect("settings_left", "Save", footerRowY, settingsFooterReserve);
                 if savePressed then
                     writeDebugLog(string.format('settings footer click Save page=%s dirty=%s', tostring(activePage), tostring(isDirty)));
                     self:modalApplyAction('settings_save_button');
@@ -3711,7 +3712,7 @@ local SettingsWindow =
                 end
             else
                 local donePressed = footerButton("Done");
-                logFooterItemRect("settings_left", "Done", footerRowY, footerReserve);
+                logFooterItemRect("settings_left", "Done", footerRowY, settingsFooterReserve);
                 if donePressed then
                     writeDebugLog(string.format('settings footer click Done page=%s dirty=%s', tostring(activePage), tostring(isDirty)));
                     if pageHasSettings then
@@ -3735,7 +3736,7 @@ local SettingsWindow =
 
             if pageActionLabel == "Use Defaults" then
                 local defaultsPressed = footerButton("Use Defaults", rightWLog);
-                logFooterItemRect("settings_right", "Use Defaults", footerRowY, footerReserve);
+                logFooterItemRect("settings_right", "Use Defaults", footerRowY, settingsFooterReserve);
                 if defaultsPressed then
                     if activePage == 1 then
                         openConfirmModal(
@@ -3784,7 +3785,7 @@ local SettingsWindow =
             elseif pageActionLabel == "Generate" then
                 local generateDisabled = imguiPushDisabled(state.values.genReportDisabled);
                 local generatePressed = footerButton("Generate", rightWLog);
-                logFooterItemRect("settings_right", "Generate", footerRowY, footerReserve);
+                logFooterItemRect("settings_right", "Generate", footerRowY, settingsFooterReserve);
                 if generatePressed then
                     if not generateDisabled then
                         generateReportsFromFooter();
@@ -3797,7 +3798,7 @@ local SettingsWindow =
             end
         end
 
-        local footerOpened = imgui.BeginChild("SettingsFooterRow", { -1, footerReserve }, false, bit.bor(ImGuiWindowFlags.NoScrollbar, ImGuiWindowFlags.NoScrollWithMouse));
+        local footerOpened = imgui.BeginChild("SettingsFooterRow", { -1, settingsFooterReserve }, false, bit.bor(ImGuiWindowFlags.NoScrollbar, ImGuiWindowFlags.NoScrollWithMouse));
         if footerOpened then
             local footerStartX = imgui.GetCursorPosX();
             local footerStartY = imgui.GetCursorPosY();
@@ -3805,7 +3806,6 @@ local SettingsWindow =
             renderSettingsFooter(footerStartX, footerStartY, footerAvail, true);
         end
         imgui.EndChild();
-
         if not footerOpened then
             local footerStartX = imgui.GetCursorPosX();
             local footerStartY = imgui.GetCursorPosY();
@@ -4094,6 +4094,19 @@ ashita.events.register('d3d_present', 'yield_render', function()
         return value * yScale;
     end
 
+    local function styleColorOpaque(col, fallback)
+        local r = tonumber(fallback and fallback[1]) or 0.0;
+        local g = tonumber(fallback and fallback[2]) or 0.0;
+        local b = tonumber(fallback and fallback[3]) or 0.0;
+        local ok, c = pcall(function() return imgui.GetStyleColorVec4(col); end);
+        if ok and type(c) == "table" then
+            r = tonumber(c.x) or tonumber(c[1]) or r;
+            g = tonumber(c.y) or tonumber(c[2]) or g;
+            b = tonumber(c.z) or tonumber(c[3]) or b;
+        end
+        return { r, g, b, 1.0 };
+    end
+
     imgui.PushStyleVar(ImGuiStyleVar.WindowRounding, 5.0);
     imgui.PushStyleVar(ImGuiStyleVar.FrameRounding, 5.0);
     imgui.PushStyleVar(ImGuiStyleVar.ChildRounding, 5.0);
@@ -4101,6 +4114,10 @@ ashita.events.register('d3d_present', 'yield_render', function()
     local paddingX = sx(5.0);
     local paddingY = sy(5.0);
     imgui.PushStyleVar(ImGuiStyleVar.WindowPadding, { paddingX, paddingY });
+    -- Keep 1.0 opacity fully opaque even if the active ImGui theme has translucent backgrounds.
+    imgui.PushStyleColor(ImGuiCol.WindowBg, styleColorOpaque(ImGuiCol.WindowBg, { 17/255, 17/255, 30/255 }));
+    imgui.PushStyleColor(ImGuiCol.ChildBg, styleColorOpaque(ImGuiCol.ChildBg, { 17/255, 17/255, 30/255 }));
+    imgui.PushStyleColor(ImGuiCol.PopupBg, styleColorOpaque(ImGuiCol.PopupBg, { 17/255, 17/255, 30/255 }));
     imgui.PushStyleColor(ImGuiCol.Border, { 0.21, 0.47, 0.59, 0.5 });
     imgui.PushStyleColor(ImGuiCol.PlotLines, { 0.77, 0.83, 0.80, 0.3 });
     imgui.PushStyleColor(ImGuiCol.PlotHistogram, { 0.77, 0.83, 0.80, 0.3 });
@@ -4255,7 +4272,6 @@ ashita.events.register('d3d_present', 'yield_render', function()
         rowAvail = tonumber(rowAvail.x) or 0.0;
     end
     local widths = {};
-    local widthsTotal = 0.0;
     for i, data in ipairs(gatherTypes) do
         local w = 0.0;
         if state.values.btnTextureFailure or not settings.general.useImageButtons then
@@ -4265,16 +4281,17 @@ ashita.events.register('d3d_present', 'yield_render', function()
             w = textureSize + (state.window.scale * 8.0);
         end
         widths[i] = w;
-        widthsTotal = widthsTotal + w;
     end
-    local gap = 0.0;
-    if #gatherTypes > 0 then
-        gap = (rowAvail - widthsTotal) / (#gatherTypes + 1);
-        if gap < 0 then gap = 0; end
-    end
-    local cursorX = rowStartX + gap;
+    local uiSpace = state.window.ui and state.window.ui.space or nil;
+    local navMinGap = (uiSpace and tonumber(uiSpace.navMinGap)) or state.window.spaceGatherBtn or 0.0;
+    local navPositions, navGap, navEdge, navTotalWidth =
+        computeFlushRowPositions(rowStartX, rowAvail, widths, navMinGap);
+    logLayoutBreadcrumb("nav_main_even", string.format(
+        "count=%d avail=%.1f total=%.1f gap=%.1f edge=%.1f",
+        #gatherTypes, tonumber(rowAvail) or 0.0, tonumber(navTotalWidth) or 0.0, tonumber(navGap) or 0.0, tonumber(navEdge) or 0.0
+    ));
     for i, data in ipairs(gatherTypes) do
-        imgui.SetCursorPosX(cursorX);
+        imgui.SetCursorPosX(navPositions[i] or rowStartX);
         imgui.SetCursorPosY(rowStartY);
         local isSelected = (data.name == state.gathering);
         if isSelected then
@@ -4302,7 +4319,6 @@ ashita.events.register('d3d_present', 'yield_render', function()
         if imgui.IsItemHovered() then
             imgui.SetTooltip(string.upperfirst(data.name));
         end
-        cursorX = cursorX + widths[i] + gap;
     end
     local rowHeight = imgui.GetFrameHeightWithSpacing();
     if not state.values.btnTextureFailure and settings.general.useImageButtons then
