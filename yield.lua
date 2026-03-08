@@ -479,6 +479,7 @@ local helpTable =
         helpCommandEntry('unload', 'Unload Yield.'),
         helpCommandEntry('reload', 'Reload Yield.'),
         helpCommandEntry('find', 'Move Yield to the top left corner of your screen.');
+        helpCommandEntry('fake', 'Seed fake yields for all gathering types (dev).'),
         helpCommandEntry('about', 'Display information about Yield.'),
         helpCommandEntry('help', 'Display Yield commands.'),
         helpSeparator('=', 26),
@@ -829,14 +830,7 @@ local function setWindowFontScale(scale)
     if state and state.window then
         state.window.currentTextScale = s;
     end
-    -- Avoid double-applying scale in nested child windows by checking current font size.
-    if defaultFontSize then
-        local expected = (tonumber(defaultFontSize) or 0.0) * s;
-        local current = tonumber(imgui.GetFontSize()) or expected;
-        if expected > 0.0 and math.abs(current - expected) < 0.25 then
-            return;
-        end
-    end
+    -- Always apply scale explicitly so temporary button-font changes restore reliably.
     imgui.SetWindowFontScale(s);
 end
 
@@ -938,12 +932,6 @@ local function queueColorSave(context)
 end
 
 local function uiButton(...)
-    local prevScale = 1.0;
-    if state and state.window and state.window.currentTextScale then
-        prevScale = state.window.currentTextScale;
-    elseif state and state.window and state.window.textScale then
-        prevScale = state.window.textScale;
-    end
     local padX = 4.0;
     local padY = 3.0;
     if state and state.window then
@@ -951,16 +939,50 @@ local function uiButton(...)
         padY = padY * (tonumber(state.window.buttonSizeYScale) or 1.0);
     end
     imgui.PushStyleVar(ImGuiStyleVar.FramePadding, { padX, padY });
-    local pressed;
-    if state and state.window and state.window.buttonTextScale then
-        setWindowFontScale(state.window.buttonTextScale);
-        pressed = imgui.Button(...);
-        setWindowFontScale(prevScale);
-    else
-        pressed = imgui.Button(...);
-    end
+    local pressed = imgui.Button(...);
     imgui.PopStyleVar();
     return pressed;
+end
+
+local function calcScaledButtonHeight()
+    local h = imgui.GetFrameHeight();
+    if state and state.window then
+        -- Keep button text scaling uniform with the active window text scale.
+        local textScale = tonumber(state.window.textScale) or 1.0;
+        local padY = 3.0 * (tonumber(state.window.buttonSizeYScale) or 1.0);
+        local fontPx = (tonumber(defaultFontSize) or imgui.GetFontSize() or 12.0) * textScale;
+        h = math.max(h, fontPx + (padY * 2.0));
+    end
+    return h;
+end
+
+local function calcFooterMetrics()
+    local ui = state and state.window and state.window.ui or nil;
+    local uiSpace = ui and ui.space or nil;
+    local uiButton = ui and ui.button or nil;
+    local scale = (state and state.window and tonumber(state.window.scale)) or 1.0;
+
+    local buttonH = math.max(
+        tonumber(calcScaledButtonHeight()) or 0.0,
+        (uiButton and tonumber(uiButton.minH)) or 0.0
+    );
+    local symPad = math.max(
+        2.0,
+        (uiSpace and tonumber(uiSpace.sm)) or (scale * 2.0)
+    );
+    local bottomPadTarget = math.max(
+        2.0,
+        ((uiSpace and tonumber(uiSpace.xs)) or 0.0) + 2.0
+    );
+    local reserve = math.max(
+        tonumber(imgui.GetFrameHeightWithSpacing()) or 0.0,
+        buttonH + bottomPadTarget
+    );
+    -- Shared footer breathing room for both main and settings windows so vertical
+    -- button spacing is identical at all scales.
+    local extraBottom = math.max(3.5, (((uiSpace and tonumber(uiSpace.xs)) or 0.0) * 1.65));
+    reserve = math.ceil((tonumber(reserve) or 0.0) + extraBottom);
+    return buttonH, symPad, bottomPadTarget, reserve;
 end
 
 local function pushSelectedBorderStyle(isSelected)
@@ -1177,14 +1199,10 @@ local function renderSettingsPageStatusRow()
 end
 
 uiActionButton = function(label)
-    local h = imgui.GetFrameHeight();
+    local h = calcScaledButtonHeight();
     local minW = 64.0;
     if state and state.window then
-        local textScale = tonumber(state.window.buttonTextScale) or tonumber(state.window.textScale) or 1.0;
-        local padY = 3.0 * (tonumber(state.window.buttonSizeYScale) or 1.0);
         local scaleX = tonumber(state.window.buttonSizeXScale) or 1.0;
-        local fontPx = (tonumber(defaultFontSize) or imgui.GetFontSize() or 12.0) * textScale;
-        h = math.max(h, fontPx + (padY * 2.0));
         minW = minW * scaleX;
     end
     local w;
@@ -1209,12 +1227,6 @@ uiActionButton = function(label)
 end
 
 local function uiSmallButton(...)
-    local prevScale = 1.0;
-    if state and state.window and state.window.currentTextScale then
-        prevScale = state.window.currentTextScale;
-    elseif state and state.window and state.window.textScale then
-        prevScale = state.window.textScale;
-    end
     local padX = 3.0;
     local padY = 2.0;
     if state and state.window then
@@ -1222,14 +1234,7 @@ local function uiSmallButton(...)
         padY = padY * (tonumber(state.window.buttonSizeYScale) or 1.0);
     end
     imgui.PushStyleVar(ImGuiStyleVar.FramePadding, { padX, padY });
-    local pressed;
-    if state and state.window and state.window.buttonTextScale then
-        setWindowFontScale(state.window.buttonTextScale);
-        pressed = imgui.SmallButton(...);
-        setWindowFontScale(prevScale);
-    else
-        pressed = imgui.SmallButton(...);
-    end
+    local pressed = imgui.SmallButton(...);
     imgui.PopStyleVar();
     return pressed;
 end
@@ -1237,12 +1242,6 @@ end
 local function uiSmallButtonBoosted(label, boost)
     local b = tonumber(boost) or 1.0;
     if b < 0.50 then b = 0.50; end
-    local prevScale = 1.0;
-    if state and state.window and state.window.currentTextScale then
-        prevScale = state.window.currentTextScale;
-    elseif state and state.window and state.window.textScale then
-        prevScale = state.window.textScale;
-    end
     local padX = 3.0;
     local padY = 2.0;
     if state and state.window then
@@ -1250,15 +1249,7 @@ local function uiSmallButtonBoosted(label, boost)
         padY = padY * (tonumber(state.window.buttonSizeYScale) or 1.0);
     end
     imgui.PushStyleVar(ImGuiStyleVar.FramePadding, { padX * b, padY * b });
-    local pressed;
-    if state and state.window and state.window.buttonTextScale then
-        -- Keep text scaling uniform with all other buttons; boost only frame size.
-        setWindowFontScale(state.window.buttonTextScale);
-        pressed = imgui.SmallButton(label);
-        setWindowFontScale(prevScale);
-    else
-        pressed = imgui.SmallButton(label);
-    end
+    local pressed = imgui.SmallButton(label);
     imgui.PopStyleVar();
     return pressed;
 end
@@ -1273,10 +1264,12 @@ end
 
 estimateButtonWidth = function(label, isSmall)
     local text = tostring(label or "");
+    -- ImGui labels can include an ID suffix after '##'; width should use visible text only.
+    local visibleText = string.match(text, "^(.-)##") or text;
     local fontSize = imgui.GetFontSize();
-    local textWidth = #text * fontSize * 0.55;
+    local textWidth = #visibleText * fontSize * 0.55;
     if imgui.CalcTextSize ~= nil then
-        local ok, size = pcall(function() return imgui.CalcTextSize(text); end);
+        local ok, size = pcall(function() return imgui.CalcTextSize(visibleText); end);
         if ok and size ~= nil then
             if type(size) == "table" then
                 if size.x ~= nil then
@@ -1291,7 +1284,15 @@ estimateButtonWidth = function(label, isSmall)
     if state and state.window then
         padX = padX * (tonumber(state.window.buttonSizeXScale) or 1.0);
     end
-    return textWidth + (padX * 2.0) + 8.0;
+    return textWidth + (padX * 2.0);
+end
+
+local function estimateButtonWidthForButtons(label, isSmall)
+    if type(estimateButtonWidth) ~= "function" then
+        return 0.0;
+    end
+    local w = estimateButtonWidth(label, isSmall);
+    return tonumber(w) or 0.0;
 end
 
 local function sameLineIfFits(nextLabel, spacing, isSmall)
@@ -1320,6 +1321,140 @@ local function alignButtonGroupRight(labels, spacing, isSmall)
         return true;
     end
     return false;
+end
+
+local function getAvailX(avail)
+    if type(avail) == "table" and avail.x ~= nil then
+        return tonumber(avail.x) or 0.0;
+    end
+    return tonumber(avail) or 0.0;
+end
+
+local function getAvailXY(avail, fallbackY)
+    if type(avail) == "table" then
+        local x = tonumber(avail.x) or tonumber(avail[1]) or 0.0;
+        local y = tonumber(avail.y) or tonumber(avail[2]) or tonumber(fallbackY) or 0.0;
+        return x, y;
+    end
+    local x = tonumber(avail) or 0.0;
+    local y = tonumber(fallbackY) or 0.0;
+    return x, y;
+end
+
+-- Distribute buttons evenly across a row with symmetric edge spacing.
+local function computeEvenRowPositions(startX, availWidth, widths, minGap, edgePad)
+    local positions = {};
+    local count = #widths;
+    if count <= 0 then
+        return positions, 0.0, 0.0, 0.0;
+    end
+
+    local totalWidth = 0.0;
+    for i = 1, count do
+        totalWidth = totalWidth + (tonumber(widths[i]) or 0.0);
+    end
+
+    local avail = math.max(0.0, tonumber(availWidth) or 0.0);
+    local edge = math.max(0.0, tonumber(edgePad) or 0.0);
+    local gap = math.max(0.0, tonumber(minGap) or 0.0);
+    local slots = count + 1;
+    local free = avail - totalWidth - (edge * 2.0);
+    local equalGap = free / slots;
+    if equalGap > gap then
+        gap = equalGap;
+    end
+
+    -- If the configured minimum gap does not fit, gracefully compress the gaps.
+    local required = totalWidth + (gap * slots) + (edge * 2.0);
+    if required > avail then
+        gap = math.max(0.0, (avail - totalWidth - (edge * 2.0)) / slots);
+    end
+
+    local x = (tonumber(startX) or 0.0) + edge + gap;
+    for i = 1, count do
+        positions[i] = x;
+        x = x + (tonumber(widths[i]) or 0.0) + gap;
+    end
+    return positions, gap, edge, totalWidth;
+end
+
+-- Distribute a row with no outer gaps: first and last items are flush to row edges.
+local function computeFlushRowPositions(startX, availWidth, widths, minGap)
+    local positions = {};
+    local count = #widths;
+    if count <= 0 then
+        return positions, 0.0, 0.0, 0.0;
+    end
+
+    local totalWidth = 0.0;
+    for i = 1, count do
+        totalWidth = totalWidth + (tonumber(widths[i]) or 0.0);
+    end
+
+    local avail = math.max(0.0, tonumber(availWidth) or 0.0);
+    local gap = 0.0;
+    local slots = count - 1;
+    if slots > 0 then
+        gap = math.max(0.0, tonumber(minGap) or 0.0);
+        local equalGap = (avail - totalWidth) / slots;
+        if equalGap > gap then
+            gap = equalGap;
+        end
+        local required = totalWidth + (gap * slots);
+        if required > avail then
+            gap = math.max(0.0, (avail - totalWidth) / slots);
+        end
+    end
+
+    local x = tonumber(startX) or 0.0;
+    for i = 1, count do
+        positions[i] = x;
+        x = x + (tonumber(widths[i]) or 0.0) + gap;
+    end
+    return positions, gap, 0.0, totalWidth;
+end
+
+local function logLayoutBreadcrumb(tag, details)
+    if not state or not state.values then
+        return;
+    end
+    local now = os.clock();
+    state.values.layoutLogAt = state.values.layoutLogAt or {};
+    local key = tostring(tag or "layout");
+    local last = state.values.layoutLogAt[key] or 0;
+    if (now - last) < 1.0 then
+        return;
+    end
+    state.values.layoutLogAt[key] = now;
+    writeDebugLog(string.format("layout_%s %s", key, tostring(details or "")));
+end
+
+local function logFooterItemRect(tag, label, rowY, reserve)
+    if not state or not state.values then
+        return;
+    end
+    local now = os.clock();
+    state.values.footerRectLogAt = state.values.footerRectLogAt or {};
+    local key = tostring(tag or "footer");
+    local last = state.values.footerRectLogAt[key] or 0;
+    if (now - last) < 1.0 then
+        return;
+    end
+    state.values.footerRectLogAt[key] = now;
+
+    local afterY = tonumber(imgui.GetCursorPosY()) or 0.0;
+    local startY = tonumber(rowY) or 0.0;
+    local reserveY = tonumber(reserve) or 0.0;
+    local consumedY = afterY - startY;
+    local overflowY = consumedY - reserveY;
+    local frameH = tonumber(imgui.GetFrameHeight()) or 0.0;
+    local frameHS = tonumber(imgui.GetFrameHeightWithSpacing()) or 0.0;
+    local lineH = tonumber(imgui.GetTextLineHeight()) or 0.0;
+    writeDebugLog(string.format(
+        "footer_item_rect tag=%s label=%s rowY=%.1f afterY=%.1f reserve=%.1f consumedY=%.1f overflowY=%.2f frameH=%.2f frameHS=%.2f lineH=%.2f",
+        key, tostring(label or ""), startY, afterY, reserveY,
+        consumedY, overflowY, frameH, frameHS, lineH
+    ));
 end
 
 local function applyYieldColorFromVar(gathering, yieldName)
@@ -1627,6 +1762,80 @@ function getPrice(itemName, gatherType)
         price = npcPrice;
     end
     return math.floor(tonumber(price) or 0);
+end
+
+local function getSortedYieldNames(gathering)
+    local names = {};
+    if settings == nil or settings.yields == nil or settings.yields[gathering] == nil then
+        return names;
+    end
+    for yieldName, _ in pairs(settings.yields[gathering]) do
+        names[#names + 1] = yieldName;
+    end
+    table.sort(names, function(a, b)
+        return tostring(a) < tostring(b);
+    end);
+    return names;
+end
+
+local function seedFakeYieldsForGather(gathering, gatherIndex)
+    if gathering == nil then
+        return 0, 0, 0;
+    end
+    metrics[gathering] = metrics[gathering] or table.copy(metricsTemplate);
+    metrics[gathering].totals = metrics[gathering].totals or table.copy(metricsTemplate.totals);
+    metrics[gathering].points = metrics[gathering].points or table.copy(metricsTemplate.points);
+    metrics[gathering].yields = {};
+
+    local yieldNames = getSortedYieldNames(gathering);
+    local take = math.min(#yieldNames, 8);
+    local totalYields = 0;
+    local estimatedValue = 0;
+
+    for i = 1, take do
+        local yieldName = yieldNames[i];
+        local count = ((tonumber(gatherIndex) or 1) * 2) + i;
+        metrics[gathering].yields[yieldName] = count;
+        totalYields = totalYields + count;
+        estimatedValue = estimatedValue + (getPrice(yieldName, gathering) * count);
+    end
+
+    metrics[gathering].totals.yields = totalYields;
+    metrics[gathering].totals.attempts = totalYields + math.max(8, take);
+    metrics[gathering].totals.breaks = math.max(0, math.floor(take / 2));
+    metrics[gathering].totals.lost = math.max(0, math.floor(take / 3));
+    metrics[gathering].estimatedValue = estimatedValue;
+    metrics[gathering].secondsPassed = math.max(120, totalYields * 8);
+    metrics[gathering].points.yields = { math.max(1, totalYields * 2) };
+    metrics[gathering].points.values = { math.max(0, estimatedValue * 2) };
+
+    local estimatedVarName = string.format("var_%s_estimatedValue", gathering);
+    if uiVariables[estimatedVarName] ~= nil then
+        imgui.SetVarValue(uiVariables[estimatedVarName], estimatedValue);
+    end
+
+    return take, totalYields, estimatedValue;
+end
+
+local function seedFakeYieldsAllGatherings()
+    local seededGatherCount = 0;
+    local seededItemRows = 0;
+    for i, data in ipairs(gatherTypes) do
+        local gathering = data and data.name or nil;
+        local rowCount = 0;
+        local totalYields = 0;
+        local est = 0;
+        rowCount, totalYields, est = seedFakeYieldsForGather(gathering, i);
+        if rowCount > 0 then
+            seededGatherCount = seededGatherCount + 1;
+            seededItemRows = seededItemRows + rowCount;
+            writeDebugLog(string.format('seed_fake gather=%s rows=%d total=%d value=%d',
+                tostring(gathering), tonumber(rowCount) or 0, tonumber(totalYields) or 0, tonumber(est) or 0));
+        end
+    end
+    checkTargetAlertReady();
+    trySaveSettings('seed_fake_yields', true);
+    return seededGatherCount, seededItemRows;
 end
 
 ----------------------------------------------------------------------------------------------------
@@ -2887,6 +3096,10 @@ ashita.events.register('command', 'yield_command', function(e)
         state.window.posX = 0;
         state.window.posY = 0;
         state.initializing = true;
+    elseif commandArgs[2] == 'fake' or commandArgs[2] == 'seed' then
+        local gatherCount, itemRows = seedFakeYieldsAllGatherings();
+        responseMessage = string.format('Seeded fake yields for %d gathering types (%d yield rows).', tonumber(gatherCount) or 0, tonumber(itemRows) or 0);
+        success = (gatherCount > 0);
     else
         displayHelp(helpTable.commands);
     end
@@ -3315,10 +3528,27 @@ local SettingsWindow =
         setWindowFontScale(state.window.textScale);
         -- SETTINGS_MENU
         if imgui.BeginMenuBar() then
+            local rowStartX = imgui.GetCursorPosX();
             local rowStartY = imgui.GetCursorPosY();
-            local gap = state.window.spaceSettingsBtn;
+            local rowAvailX = getAvailX(imgui.GetContentRegionAvail());
+            local navLabels = {};
+            local navWidths = {};
             for i, data in ipairs(settingsTypes) do
                 local btnName = string.camelToTitle(data.name);
+                navLabels[i] = btnName;
+                navWidths[i] = estimateButtonWidthForButtons(btnName, false);
+            end
+            local uiSpace = state.window.ui and state.window.ui.space or nil;
+            local navMinGap = (uiSpace and tonumber(uiSpace.navMinGap)) or state.window.spaceSettingsBtn or 6.0;
+            local navEdgePad = (uiSpace and tonumber(uiSpace.navEdgePad)) or 0.0;
+            local navPositions, navGap, navEdge, navTotalWidth = computeEvenRowPositions(rowStartX, rowAvailX, navWidths, navMinGap, navEdgePad);
+            logLayoutBreadcrumb("nav_settings", string.format(
+                "count=%d avail=%.1f total=%.1f gap=%.1f edge=%.1f",
+                #settingsTypes, tonumber(rowAvailX) or 0.0, tonumber(navTotalWidth) or 0.0, tonumber(navGap) or 0.0, tonumber(navEdge) or 0.0
+            ));
+            for i, data in ipairs(settingsTypes) do
+                local btnName = navLabels[i];
+                imgui.SetCursorPosX(navPositions[i] or rowStartX);
                 imgui.SetCursorPosY(rowStartY);
                 imguiPushActiveBtnColor(state.settings.activeIndex == i);
                 if uiButton(btnName) then
@@ -3329,9 +3559,6 @@ local SettingsWindow =
                    imgui.SetVarValue(uiVariables["var_IssueBody"], "")
                 end
                 imgui.PopStyleColor();
-                if i < #settingsTypes then
-                    imgui.SameLine(0.0, gap);
-                end
             end
             imgui.EndMenuBar();
         end
@@ -3342,31 +3569,8 @@ local SettingsWindow =
         local showRecalculate = (activePage == 2 and yieldsExist);
         logScaleSnapshot("settings", string.format("page=%s", tostring(activePage)));
 
-        local function getAvailXY(avail, fallbackY)
-            if type(avail) == "table" and avail.x ~= nil then
-                local x = tonumber(avail.x) or 0.0;
-                local y = tonumber(avail.y) or (tonumber(fallbackY) or 0.0);
-                return x, y;
-            end
-            local x = tonumber(avail) or 0.0;
-            local y = tonumber(fallbackY) or 0.0;
-            return x, y;
-        end
-
         -- Use a body child to keep the footer pinned like the primary window.
-        local function calcSettingsFooterButtonHeight()
-            local h = imgui.GetFrameHeight();
-            if state and state.window then
-                local textScale = tonumber(state.window.buttonTextScale) or tonumber(state.window.textScale) or 1.0;
-                local padY = 3.0 * (tonumber(state.window.buttonSizeYScale) or 1.0);
-                local fontPx = (tonumber(defaultFontSize) or imgui.GetFontSize() or 12.0) * textScale;
-                h = math.max(h, fontPx + (padY * 2.0));
-            end
-            return h;
-        end
-        local footerButtonHeight = calcSettingsFooterButtonHeight();
-        local footerBottomPad = math.max(4.0, (tonumber(state.window.scale) or 1.0) * 2.0);
-        local footerReserve = math.max(imgui.GetFrameHeightWithSpacing(), footerButtonHeight + math.max(2.0, tonumber(state.window.scale) or 1.0) + footerBottomPad);
+        local footerButtonHeight, footerSymPad, footerBottomPadTarget, footerReserve = calcFooterMetrics();
         local recalcReserve = showRecalculate and imgui.GetFrameHeightWithSpacing() or 0.0;
 
         if imgui.BeginChild("SettingsBodyHost", { -1, -footerReserve }, false, bit.bor(ImGuiWindowFlags.NoScrollbar, ImGuiWindowFlags.NoScrollWithMouse)) then
@@ -3428,6 +3632,15 @@ local SettingsWindow =
         end
         imgui.EndChild();
 
+        -- Remove default item spacing gap between settings body and footer so the body scrollbar
+        -- visually ends exactly where the footer begins.
+        local footerJoinTighten =
+            (state.window.ui and state.window.ui.space and tonumber(state.window.ui.space.sm)) or 0.0;
+        if footerJoinTighten > 0.0 then
+            local joinY = tonumber(imgui.GetCursorPosY()) or 0.0;
+            imgui.SetCursorPosY(math.max(0.0, joinY - footerJoinTighten - 1.0));
+        end
+
         local pageHasSettings = (activePage >= 1 and activePage <= 4);
         local isDirty = pageHasSettings and hasPendingSettingsChanges();
         local pageActionLabel = nil;
@@ -3440,15 +3653,41 @@ local SettingsWindow =
         local function renderSettingsFooter(footerStartX, footerStartY, footerAvail, footerOpenedFlag)
             local footerAvailX, footerAvailY = getAvailXY(footerAvail, footerReserve);
             local footerSpacing = state.window.spaceSettingsBtn or 6.0;
-            local footerRowY = footerStartY + math.max(0.0, (footerAvailY - footerButtonHeight - footerBottomPad));
+            local footerRowOffset = math.max(0.0, (footerAvailY - footerButtonHeight) * 0.5);
+            -- Tiny visual trim: reduce perceived extra space under settings footer buttons.
+            footerRowOffset = math.min(
+                math.max(0.0, footerAvailY - footerButtonHeight),
+                footerRowOffset + 0.20
+            );
+            local footerRowY = footerStartY + footerRowOffset;
+            local footerTopPad = footerRowOffset;
+            local footerBottomPad = math.max(0.0, footerAvailY - footerRowOffset - footerButtonHeight);
+            local function footerBtnWidth(label)
+                return math.max(0.0, tonumber(estimateButtonWidthForButtons(label, false)) or 0.0);
+            end
+            local function footerButton(label, width)
+                return uiButton(label, { tonumber(width) or footerBtnWidth(label), footerButtonHeight });
+            end
+            local rightWLog = 0.0;
+            local rightXLog = 0.0;
+            local rightInsetLog = -1.0;
+            if pageActionLabel ~= nil then
+                rightWLog = footerBtnWidth(pageActionLabel);
+                rightXLog = footerStartX + footerAvailX - rightWLog - rightInsetLog;
+                if rightXLog < footerStartX then rightXLog = footerStartX; end
+                -- Pixel-snap to avoid fractional-x rendering drift at some scales.
+                rightXLog = math.floor((tonumber(rightXLog) or 0.0) + 0.5);
+            end
 
             local now = os.clock();
             state.values.settingsFooterLogAt = state.values.settingsFooterLogAt or 0;
             if (now - state.values.settingsFooterLogAt) >= 1.0 then
                 state.values.settingsFooterLogAt = now;
-                writeDebugLog(string.format("settings_footer page=%s dirty=%s scale=%.2f open=%s reserve=%.1f btnH=%.1f bottomPad=%.1f start=(%.1f,%.1f) avail=(%.1f,%.1f) rowY=%.1f",
+                writeDebugLog(string.format("settings_footer page=%s dirty=%s scale=%.2f open=%s reserve=%.1f btnH=%.1f symPad=%.1f topPad=%.1f bottomPad=%.1f rightW=%.1f rightX=%.1f rightInset=%.1f start=(%.1f,%.1f) avail=(%.1f,%.1f) rowY=%.1f",
                     tostring(activePage), tostring(isDirty), tonumber(state.window.scale) or 0.0, tostring(footerOpenedFlag), tonumber(footerReserve) or 0.0,
-                    tonumber(footerButtonHeight) or 0.0, tonumber(footerBottomPad) or 0.0,
+                    tonumber(footerButtonHeight) or 0.0, tonumber(footerSymPad) or 0.0,
+                    tonumber(footerTopPad) or 0.0, tonumber(footerBottomPad) or 0.0,
+                    tonumber(rightWLog) or 0.0, tonumber(rightXLog) or 0.0, tonumber(rightInsetLog) or 0.0,
                     tonumber(footerStartX) or 0.0, tonumber(footerStartY) or 0.0,
                     tonumber(footerAvailX) or 0.0, tonumber(footerAvailY) or 0.0,
                     tonumber(footerRowY) or 0.0));
@@ -3458,17 +3697,22 @@ local SettingsWindow =
             imgui.SetCursorPosX(footerStartX);
             imgui.SetCursorPosY(footerRowY);
             if pageHasSettings and isDirty then
-                if uiButton("Save") then
+                local savePressed = footerButton("Save");
+                logFooterItemRect("settings_left", "Save", footerRowY, footerReserve);
+                if savePressed then
                     writeDebugLog(string.format('settings footer click Save page=%s dirty=%s', tostring(activePage), tostring(isDirty)));
                     self:modalApplyAction('settings_save_button');
                 end
                 imgui.SameLine(0.0, footerSpacing);
-                if uiButton("Cancel") then
+                local cancelPressed = footerButton("Cancel");
+                if cancelPressed then
                     writeDebugLog(string.format('settings footer click Cancel page=%s dirty=%s', tostring(activePage), tostring(isDirty)));
                     self:modalCancelAction(true, true);
                 end
             else
-                if uiButton("Done") then
+                local donePressed = footerButton("Done");
+                logFooterItemRect("settings_left", "Done", footerRowY, footerReserve);
+                if donePressed then
                     writeDebugLog(string.format('settings footer click Done page=%s dirty=%s', tostring(activePage), tostring(isDirty)));
                     if pageHasSettings then
                         local ok = trySaveSettings('settings_done_close', true);
@@ -3485,15 +3729,14 @@ local SettingsWindow =
 
             -- Right group: page action
             if pageActionLabel ~= nil then
-                local rightW = estimateButtonWidth(pageActionLabel, false);
-                local rightX = footerStartX + footerAvailX - rightW;
-                if rightX < footerStartX then rightX = footerStartX; end
-                imgui.SetCursorPosX(rightX);
+                imgui.SetCursorPosX(rightXLog);
                 imgui.SetCursorPosY(footerRowY);
             end
 
             if pageActionLabel == "Use Defaults" then
-                if uiButton("Use Defaults") then
+                local defaultsPressed = footerButton("Use Defaults", rightWLog);
+                logFooterItemRect("settings_right", "Use Defaults", footerRowY, footerReserve);
+                if defaultsPressed then
                     if activePage == 1 then
                         openConfirmModal(
                             "reset General settings to defaults",
@@ -3540,7 +3783,9 @@ local SettingsWindow =
                 end
             elseif pageActionLabel == "Generate" then
                 local generateDisabled = imguiPushDisabled(state.values.genReportDisabled);
-                if uiButton("Generate") then
+                local generatePressed = footerButton("Generate", rightWLog);
+                logFooterItemRect("settings_right", "Generate", footerRowY, footerReserve);
+                if generatePressed then
                     if not generateDisabled then
                         generateReportsFromFooter();
                     end
@@ -3550,11 +3795,6 @@ local SettingsWindow =
                 end
                 imguiPopDisabled(generateDisabled);
             end
-
-            -- Keep one spacer line under the footer button row to avoid clipping.
-            imgui.SetCursorPosX(footerStartX);
-            imgui.SetCursorPosY(footerRowY + footerButtonHeight);
-            imgui.Spacing();
         end
 
         local footerOpened = imgui.BeginChild("SettingsFooterRow", { -1, footerReserve }, false, bit.bor(ImGuiWindowFlags.NoScrollbar, ImGuiWindowFlags.NoScrollWithMouse));
@@ -3767,19 +4007,33 @@ local helpWindow =
 
         -- HELP_MENU
         if imgui.BeginMenuBar() then
+            local rowStartX = imgui.GetCursorPosX();
             local rowStartY = imgui.GetCursorPosY();
-            local gap = state.window.spaceSettingsBtn;
+            local rowAvailX = getAvailX(imgui.GetContentRegionAvail());
+            local navLabels = {};
+            local navWidths = {};
             for i, data in ipairs(helpTypes) do
                 local btnName = string.camelToTitle(data.name);
+                navLabels[i] = btnName;
+                navWidths[i] = estimateButtonWidthForButtons(btnName, false);
+            end
+            local uiSpace = state.window.ui and state.window.ui.space or nil;
+            local navMinGap = (uiSpace and tonumber(uiSpace.navMinGap)) or state.window.spaceSettingsBtn or 6.0;
+            local navEdgePad = (uiSpace and tonumber(uiSpace.navEdgePad)) or 0.0;
+            local navPositions, navGap, navEdge, navTotalWidth = computeEvenRowPositions(rowStartX, rowAvailX, navWidths, navMinGap, navEdgePad);
+            logLayoutBreadcrumb("nav_help", string.format(
+                "count=%d avail=%.1f total=%.1f gap=%.1f edge=%.1f",
+                #helpTypes, tonumber(rowAvailX) or 0.0, tonumber(navTotalWidth) or 0.0, tonumber(navGap) or 0.0, tonumber(navEdge) or 0.0
+            ));
+            for i, data in ipairs(helpTypes) do
+                local btnName = navLabels[i];
+                imgui.SetCursorPosX(navPositions[i] or rowStartX);
                 imgui.SetCursorPosY(rowStartY);
                 imguiPushActiveBtnColor(state.help.activeIndex == i);
                 if uiButton(btnName) then
                     state.help.activeIndex = i;
                 end
                 imgui.PopStyleColor();
-                if i < #helpTypes then
-                    imgui.SameLine(0.0, gap);
-                end
             end
             imgui.EndMenuBar();
         end
@@ -3918,6 +4172,51 @@ ashita.events.register('d3d_present', 'yield_render', function()
         spaceReportsDelete    = sx(176.0),
         widthReportScale      = sx(150.0)
     }
+    local tokenButtonPadX = 4.0 * buttonSizeXScale;
+    local tokenButtonPadY = 3.0 * buttonSizeYScale;
+    state.window.ui =
+    {
+        font =
+        {
+            body    = textScale,
+            metrics = metricsTextScale,
+            button  = buttonTextScale,
+        },
+        space =
+        {
+            xs            = sx(2.0),
+            sm            = sx(4.0),
+            md            = sx(7.0),
+            lg            = sx(12.0),
+            vRow          = sy(4.0),
+            vSection      = sy(8.0),
+            vPage         = sy(12.0),
+            navMinGap     = sx(6.0),
+            navEdgePad    = sx(2.0),
+            footerMinGap  = sx(6.0),
+            footerEdgePad = sx(2.0),
+        },
+        button =
+        {
+            padX = tokenButtonPadX,
+            padY = tokenButtonPadY,
+            minH = math.max(
+                tonumber(imgui.GetFrameHeight()) or 0.0,
+                ((tonumber(defaultFontSize) or imgui.GetFontSize() or 12.0) * buttonTextScale) + (tokenButtonPadY * 2.0)
+            ),
+        },
+        footer =
+        {
+            bottomPad = math.max(4.0, windowScale * 2.0),
+        },
+    };
+    logLayoutBreadcrumb("phase1_tokens", string.format(
+        "scale=%.2f navGap=%.1f footerGap=%.1f btnMinH=%.1f",
+        tonumber(windowScale) or 0.0,
+        tonumber(state.window.ui.space.navMinGap) or 0.0,
+        tonumber(state.window.ui.space.footerMinGap) or 0.0,
+        tonumber(state.window.ui.button.minH) or 0.0
+    ));
 
     setWindowFontScale(state.window.textScale);
     logScaleSnapshot("main", "");
@@ -4441,9 +4740,9 @@ ashita.events.register('d3d_present', 'yield_render', function()
         }
     end
 
-    local footerReserve = (imgui.GetFrameHeightWithSpacing() * 1.4) + (state.window.spaceFooterBtn * 2.0);
+    local uiSpace = state.window.ui and state.window.ui.space or nil;
+    local mainFooterButtonHeight, mainFooterSymPad, mainFooterBottomPadTarget, footerReserve = calcFooterMetrics();
     if imgui.BeginChild("Scrolling", { -1, -footerReserve }, true) then
-        setWindowFontScale(state.window.textScale);
         -- Reset per-frame button-hover guard so list sorting clicks cannot get stuck disabled.
         state.values.yieldListBtnsHovered = false;
         -- yields
@@ -4550,35 +4849,45 @@ ashita.events.register('d3d_present', 'yield_render', function()
     end
     -- /MAIN_SCROLLING
 
-    imguiFullSep();
+    local mainFooterOpened = imgui.BeginChild("MainFooterRow", { -1, footerReserve }, false, bit.bor(ImGuiWindowFlags.NoScrollbar, ImGuiWindowFlags.NoScrollWithMouse));
     local footerLabels = { "Exit", "Reload", "Reset", "Settings", "Help" };
     local footerStartX = imgui.GetCursorPosX();
     local footerStartY = imgui.GetCursorPosY();
     local footerAvail = imgui.GetContentRegionAvail();
-    local footerWidthTotal = 0.0;
+    local footerAvailX, footerAvailY = getAvailXY(footerAvail, footerReserve);
+    local footerRowOffset = math.max(0.0, (footerAvailY - mainFooterButtonHeight) * 0.5);
+    local footerRowY = footerStartY + footerRowOffset;
+    local footerTopPad = footerRowOffset;
+    local footerBottomPad = math.max(0.0, footerAvailY - footerRowOffset - mainFooterButtonHeight);
     local footerWidths = {};
     for i, label in ipairs(footerLabels) do
-        footerWidths[i] = estimateButtonWidth(label, false);
-        footerWidthTotal = footerWidthTotal + footerWidths[i];
+        footerWidths[i] = estimateButtonWidthForButtons(label, false);
     end
-    local footerGap = 0.0;
-    if #footerLabels > 0 then
-        footerGap = (footerAvail - footerWidthTotal) / (#footerLabels + 1);
-        if footerGap < 0 then footerGap = 0; end
-    end
+    local footerMinGap = (uiSpace and tonumber(uiSpace.footerMinGap)) or state.window.spaceFooterBtn or 0.0;
+    local footerPositions, footerGap, footerEdge, footerWidthTotal =
+        computeFlushRowPositions(footerStartX, footerAvailX, footerWidths, footerMinGap);
+    logLayoutBreadcrumb("footer_main_even", string.format(
+        "count=%d startY=%.1f avail=(%.1f,%.1f) total=%.1f gap=%.1f edge=%.1f btnH=%.1f symPad=%.1f topPad=%.1f bottomPad=%.1f",
+        #footerLabels,
+        tonumber(footerStartY) or 0.0,
+        tonumber(footerAvailX) or 0.0, tonumber(footerAvailY) or 0.0,
+        tonumber(footerWidthTotal) or 0.0, tonumber(footerGap) or 0.0, tonumber(footerEdge) or 0.0,
+        tonumber(mainFooterButtonHeight) or 0.0, tonumber(mainFooterSymPad) or 0.0,
+        tonumber(footerTopPad) or 0.0, tonumber(footerBottomPad) or 0.0
+    ));
     local function setFooterButtonPos(index)
-        local x = footerStartX + footerGap;
-        if index > 1 then
-            for i = 1, index - 1 do
-                x = x + footerWidths[i] + footerGap;
-            end
-        end
+        local x = footerPositions[index] or footerStartX;
         imgui.SetCursorPosX(x);
-        imgui.SetCursorPosY(footerStartY);
+        imgui.SetCursorPosY(footerRowY);
+    end
+    local function mainFooterButton(label, index)
+        return uiButton(label, { tonumber(footerWidths[index]) or 0.0, mainFooterButtonHeight });
     end
 
     setFooterButtonPos(1);
-    if uiButton("Exit") then
+    local exitPressed = mainFooterButton("Exit", 1);
+    logFooterItemRect("main_left", "Exit", footerRowY, footerReserve);
+    if exitPressed then
         writeDebugLog('Exit button clicked');
         state.actions.modalConfirmAction = function() queueAddonCommand('/addon unload yield'); end
         state.actions.modalCancelAction = function() end
@@ -4590,7 +4899,7 @@ ashita.events.register('d3d_present', 'yield_render', function()
     end
 
     setFooterButtonPos(2);
-    if uiButton("Reload") then
+    if mainFooterButton("Reload", 2) then
         writeDebugLog('Reload button clicked');
         state.actions.modalConfirmAction = function() queueAddonCommand('/addon reload yield'); end
         state.actions.modalCancelAction = function() end
@@ -4602,7 +4911,7 @@ ashita.events.register('d3d_present', 'yield_render', function()
     end
 
     setFooterButtonPos(3);
-    if uiButton("Reset") then
+    if mainFooterButton("Reset", 3) then
         writeDebugLog(string.format('Reset button clicked gather=%s', tostring(state.gathering)));
         openConfirmModal(
             "Reset",
@@ -4638,7 +4947,7 @@ ashita.events.register('d3d_present', 'yield_render', function()
     end
 
     setFooterButtonPos(4);
-    if uiButton("Settings") then
+    if mainFooterButton("Settings", 4) then
         if imgui.GetVarValue(uiVariables["var_HelpVisible"]) then
             imgui.SetVarValue(uiVariables["var_HelpVisible"], false);
         end
@@ -4647,13 +4956,19 @@ ashita.events.register('d3d_present', 'yield_render', function()
     end
 
     setFooterButtonPos(5);
-    if uiButton("Help") then
+    local helpPressed = mainFooterButton("Help", 5);
+    logFooterItemRect("main_right", "Help", footerRowY, footerReserve);
+    if helpPressed then
         if imgui.GetVarValue(uiVariables["var_SettingsVisible"]) then
             imgui.SetVarValue(uiVariables["var_SettingsVisible"], false);
         end
         imgui.SetVarValue(uiVariables["var_HelpVisible"], true);
         state.values.centerWindow = true;
     end
+    if not mainFooterOpened then
+        logLayoutBreadcrumb("footer_main_even", "child_open=false");
+    end
+    imgui.EndChild();
 
     -- CONFIRM
     local io = imgui.GetIO();
