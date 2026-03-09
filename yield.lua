@@ -357,6 +357,13 @@ local ashitaPlayer          = AshitaCore:GetMemoryManager():GetPlayer();
 local ashitaInventory       = AshitaCore:GetMemoryManager():GetInventory();
 local ashitaTarget          = AshitaCore:GetMemoryManager():GetTarget();
 local ashitaEntity          = AshitaCore:GetMemoryManager():GetEntity();
+local lastMoonSourceLogged  = nil;
+local moonPhasePercentCycle = {
+    100, 98, 95, 93, 90, 88, 86, 83, 81, 79, 76, 74, 71, 69, 67, 64, 62, 60, 57, 55, 52,
+    50, 48, 45, 43, 40, 38, 36, 33, 31, 29, 26, 24, 21, 19, 17, 14, 12, 10, 7, 5, 2, 0,
+    2, 5, 7, 10, 12, 14, 17, 19, 21, 24, 26, 29, 31, 33, 36, 38, 40, 43, 45, 48, 50, 52,
+    55, 57, 60, 62, 64, 67, 69, 71, 74, 76, 79, 81, 83, 86, 88, 90, 93, 95, 98
+};
 
 local gatherTypes =
 {
@@ -394,8 +401,8 @@ local eventAlertDefs =
     },
     mining =
     {
-        { key = "tool_break",     label = "Pickaxe Break",  tip = "Play when your pickaxe breaks." },
-        { key = "no_yield",       label = "Mine Nothing",   tip = "Play when you are unable to mine anything." },
+        { key = "tool_break",     label = "Tool Break",     tip = "Play when your tool breaks." },
+        { key = "no_yield",       label = "No Yield",       tip = "Play when you find nothing or fail to gather." },
         { key = "inventory_full", label = "Inventory Full", tip = "Play when inventory is full." },
         { key = "yield_lost",     label = "Yield Lost",     tip = "Play when a yield is lost." },
     },
@@ -524,6 +531,7 @@ local uiVariables =
     ["var_EnableSoundAlerts"]     = { true },
     ["var_TargetSoundFile"]       = { '' },
     ["var_FishingSkillSoundFile"] = { '' },
+    ["var_DiggingSkillSoundFile"] = { '' },
     ["var_ClamBreakSoundFile"]    = { '' },
     ["var_AutoGenReports"]        = { true },
     ["var_WindowLocked"]          = { false },
@@ -550,6 +558,7 @@ local uiVariables =
     ['var_AllColors']              = { 1.0, 1.0, 1.0, 1.0 },
     ["var_TargetSoundIndex"]       = { 0 },
     ["var_FishingSkillSoundIndex"] = { 0 },
+    ["var_DiggingSkillSoundIndex"] = { 0 },
     ["var_ClamBreakSoundIndex"]    = { 0 },
     ["var_IssueTitle"]             = { '' },
     ["var_IssueBody"]              = { '' },
@@ -1466,6 +1475,26 @@ local function getAvailXY(avail, fallbackY)
     return x, y;
 end
 
+local function estimateWrappedLineCount(text, wrapWidthPx, charWidthPx)
+    local s = tostring(text or "");
+    if s == "" then
+        return 0;
+    end
+    local wrapWidth = math.max(1.0, tonumber(wrapWidthPx) or 1.0);
+    local charWidth = math.max(1.0, tonumber(charWidthPx) or 7.0);
+    local maxChars = math.max(1, math.floor(wrapWidth / charWidth));
+    local lines = 0;
+    for rawLine in (s .. "\n"):gmatch("([^\n]*)\n") do
+        local len = string.len(rawLine or "");
+        if len <= 0 then
+            lines = lines + 1;
+        else
+            lines = lines + math.max(1, math.ceil(len / maxChars));
+        end
+    end
+    return lines;
+end
+
 -- Distribute buttons evenly across a row with symmetric edge spacing.
 local function computeEvenRowPositions(startX, availWidth, widths, minGap, edgePad)
     local positions = {};
@@ -1773,6 +1802,9 @@ function loadUiVariables()
     imgui.SetVarValue(uiVariables["var_EnableSoundAlerts"], settings.general.enableSoundAlerts);
     imgui.SetVarValue(uiVariables["var_AutoGenReports"], settings.general.autoGenReports);
     syncScaleTuningVarsFromSettings();
+    settings.general.fishingSkillSoundFile = tostring(settings.general.fishingSkillSoundFile or "");
+    settings.general.diggingSkillSoundFile = tostring(settings.general.diggingSkillSoundFile or "");
+    settings.general.clamBreakSoundFile = tostring(settings.general.clamBreakSoundFile or "");
 
     local r, g, b, a = colorToRGBA(settings.general.yieldDetailsColor);
     imgui.SetVarValue(uiVariables["var_YieldDetailsColor"], r/255, g/255, b/255, a/255);
@@ -1841,6 +1873,12 @@ function loadUiVariables()
     imgui.SetVarValue(uiVariables["var_FishingSkillSoundIndex"], soundIndex);
     soundFile = sounds[soundIndex];
     imgui.SetVarValue(uiVariables["var_FishingSkillSoundFile"], soundFile);
+
+    -- digging skill sound file
+    soundIndex = getSoundIndex(settings.general.diggingSkillSoundFile);
+    imgui.SetVarValue(uiVariables["var_DiggingSkillSoundIndex"], soundIndex);
+    soundFile = sounds[soundIndex];
+    imgui.SetVarValue(uiVariables["var_DiggingSkillSoundFile"], soundFile);
 
     -- clam break sound file
     soundIndex = getSoundIndex(settings.general.clamBreakSoundFile);
@@ -2580,6 +2618,36 @@ function runSafe(context, callback)
     return ok;
 end
 
+local function clampMoonPercent(value)
+    local n = tonumber(value);
+    if n == nil then
+        return nil;
+    end
+    n = math.floor(n + 0.5);
+    if n < 0 then n = 0; end
+    if n > 100 then n = 100; end
+    return n;
+end
+
+local function logMoonSource(source, percent)
+    if tostring(source) ~= tostring(lastMoonSourceLogged) then
+        lastMoonSourceLogged = tostring(source);
+        writeDebugLog(string.format('moon_percent source=%s value=%s', tostring(source), tostring(percent)));
+    end
+end
+
+local function getMoonPercentSafeV4()
+    -- Deterministic moon percent using Earth epoch time; avoids native pointer calls
+    -- that can crash with access violations on some Ashita/Horizon builds.
+    local unixNow = os.time();
+    local vanaEpochOffset = 92514960 - 3456;
+    local vanaDay = math.floor((tonumber(unixNow) + vanaEpochOffset) / 3456);
+    local moonIndex = ((vanaDay + 26) % 84) + 1;
+    local percent = clampMoonPercent(moonPhasePercentCycle[moonIndex]) or 0;
+    logMoonSource('epoch_formula', percent);
+    return percent;
+end
+
 local function openConfirmModal(actionText, helpText, danger, confirmAction, cancelAction)
     state.actions.modalConfirmAction = type(confirmAction) == 'function' and confirmAction or function() end;
     state.actions.modalCancelAction = type(cancelAction) == 'function' and cancelAction or function() end;
@@ -2685,6 +2753,8 @@ local function isTrackedSettingsUiVar(name)
         or name == "var_TargetSoundFile"
         or name == "var_FishingSkillSoundIndex"
         or name == "var_FishingSkillSoundFile"
+        or name == "var_DiggingSkillSoundIndex"
+        or name == "var_DiggingSkillSoundFile"
         or name == "var_ClamBreakSoundIndex"
         or name == "var_ClamBreakSoundFile"
         or name == "var_TextScaleBase"
@@ -2793,6 +2863,10 @@ local function applyAlertsDefaults(gathering)
     if gathering == "fishing" then
         imgui.SetVarValue(uiVariables["var_FishingSkillSoundIndex"], 0);
         imgui.SetVarValue(uiVariables["var_FishingSkillSoundFile"], "");
+    end
+    if gathering == "digging" then
+        imgui.SetVarValue(uiVariables["var_DiggingSkillSoundIndex"], 0);
+        imgui.SetVarValue(uiVariables["var_DiggingSkillSoundFile"], "");
     end
     if gathering == "clamming" then
         imgui.SetVarValue(uiVariables["var_ClamBreakSoundIndex"], 0);
@@ -3111,6 +3185,7 @@ function saveSettings()
     settings.general.enableSoundAlerts     = imgui.GetVarValue(uiVariables["var_EnableSoundAlerts"]);
     settings.general.targetSoundFile       = imgui.GetVarValue(uiVariables["var_TargetSoundFile"]);
     settings.general.fishingSkillSoundFile = imgui.GetVarValue(uiVariables["var_FishingSkillSoundFile"]);
+    settings.general.diggingSkillSoundFile = imgui.GetVarValue(uiVariables["var_DiggingSkillSoundFile"]);
     settings.general.clamBreakSoundFile    = imgui.GetVarValue(uiVariables["var_ClamBreakSoundFile"]);
     settings.general.autoGenReports        = imgui.GetVarValue(uiVariables["var_AutoGenReports"]);
     syncScaleTuningSettingsFromVars();
@@ -3439,12 +3514,23 @@ ashita.events.register('text_in', 'yield_text_in', function(e)
 
     -- Ensure we care..
     if not state.attempting then
+        local playerName = string.lower(tostring(getPlayerName(true) or ""));
         if state.values.lastKnownGathering == "fishing" then -- play alert on skill-up
-            local skillup = string.contains(message, string.format("%s's fishing skill rises", getPlayerName(true)))
+            local skillup = string.contains(message, string.format("%s's fishing skill rises", playerName))
+                or string.contains(message, "your fishing skill rises");
             if skillup then
                 playAlert(imgui.GetVarValue(uiVariables["var_FishingSkillSoundFile"]));
             end
-        elseif getPlayerZoneId() == 4 then -- Bibiki Bay
+        end
+        if state.values.lastKnownGathering == "digging" then -- play alert on skill-up
+            local skillup = string.contains(message, string.format("%s's digging skill rises", playerName))
+                or string.contains(message, "your digging skill rises")
+                or string.contains(message, "digging skill rises");
+            if skillup then
+                playAlert(imgui.GetVarValue(uiVariables["var_DiggingSkillSoundFile"]));
+            end
+        end
+        if getPlayerZoneId() == 4 then -- Bibiki Bay
             local obtainedBucket = string.contains(message, "obtained key item: clamming kit");
             local returnedBucket = string.contains(message, "you return the clamming kit");
             local upgraded = string.match(message, "^your clamming capacity has increased to (.*) ponzes!")
@@ -3927,6 +4013,9 @@ local SettingsWindow =
             local function footerButton(label, width)
                 return uiButton(label, { tonumber(width) or footerBtnWidth(label), footerButtonHeight });
             end
+            -- Keep a live reference of canonical settings-footer Done sizing so Help can match it exactly.
+            state.values.settingsFooterDoneW = footerBtnWidth("Done");
+            state.values.settingsFooterDoneH = footerButtonHeight;
             local rightPrimaryW = 0.0;
             local rightSecondaryLabel = nil;
             local rightSecondaryW = 0.0;
@@ -4296,7 +4385,7 @@ local helpWindow =
             imgui.SetNextWindowPos({ io.DisplaySize.x * 0.5, io.DisplaySize.y * 0.5 }, ImGuiCond.Always, { 0.5, 0.5 });
             state.values.centerWindow = false;
         end
-        if (not imgui.Begin(title, uiVariables["var_HelpVisible"], bit.bor(ImGuiWindowFlags.MenuBar, ImGuiWindowFlags.NoResize, ImGuiWindowFlags.NoCollapse))) then
+        if (not imgui.Begin(title, uiVariables["var_HelpVisible"], bit.bor(ImGuiWindowFlags.MenuBar, ImGuiWindowFlags.NoResize, ImGuiWindowFlags.NoCollapse, ImGuiWindowFlags.NoScrollbar, ImGuiWindowFlags.NoScrollWithMouse))) then
             imgui.End();
             return;
         end
@@ -4308,52 +4397,97 @@ local helpWindow =
         if imgui.BeginMenuBar() then
             local rowStartX = imgui.GetCursorPosX();
             local rowStartY = imgui.GetCursorPosY();
-            local rowAvailX = getAvailX(imgui.GetContentRegionAvail());
-            local navLabels = {};
-            local navWidths = {};
+            local navGap = state.window.spaceSettingsBtn or 6.0;
             for i, data in ipairs(helpTypes) do
                 local btnName = string.camelToTitle(data.name);
-                navLabels[i] = btnName;
-                navWidths[i] = estimateButtonWidthForButtons(btnName, false);
-            end
-            local uiSpace = state.window.ui and state.window.ui.space or nil;
-            local navMinGap = (uiSpace and tonumber(uiSpace.navMinGap)) or state.window.spaceSettingsBtn or 6.0;
-            local navEdgePad = (uiSpace and tonumber(uiSpace.navEdgePad)) or 0.0;
-            local navPositions, navGap, navEdge, navTotalWidth = computeEvenRowPositions(rowStartX, rowAvailX, navWidths, navMinGap, navEdgePad);
-            logLayoutBreadcrumb("nav_help", string.format(
-                "count=%d avail=%.1f total=%.1f gap=%.1f edge=%.1f",
-                #helpTypes, tonumber(rowAvailX) or 0.0, tonumber(navTotalWidth) or 0.0, tonumber(navGap) or 0.0, tonumber(navEdge) or 0.0
-            ));
-            for i, data in ipairs(helpTypes) do
-                local btnName = navLabels[i];
-                imgui.SetCursorPosX(navPositions[i] or rowStartX);
-                imgui.SetCursorPosY(rowStartY);
-                imguiPushActiveBtnColor(state.help.activeIndex == i);
+                if i == 1 then
+                    imgui.SetCursorPosX(rowStartX);
+                    imgui.SetCursorPosY(rowStartY);
+                else
+                    imgui.SameLine(0.0, navGap);
+                end
+                local isSelected = state.help.activeIndex == i;
+                pushSelectedBorderStyle(isSelected);
+                imguiPushActiveBtnColor(isSelected);
                 if uiButton(btnName) then
                     state.help.activeIndex = i;
                 end
-                imgui.PopStyleColor();
+                imgui.PopStyleColor(2);
+                imgui.PopStyleVar();
             end
             imgui.EndMenuBar();
         end
         -- /HELP_MENU
 
-        imgui.BeginGroup();
-        imgui.Spacing();
-        switch(state.help.activeIndex, {
-            [1] = function() renderHelpGeneral() end,
-            [2] = function() renderHelpQsAndAs() end
-        })
-        imgui.EndGroup();
-        if uiActionButton("Done") then
+        local footerButtonHeight, footerSymPad, footerBottomPadTarget, footerReserve = calcFooterMetrics();
+        local helpFooterReserve = math.ceil(tonumber(footerReserve) or 0.0);
+        if imgui.BeginChild("HelpBodyHost", { -1, -helpFooterReserve }, false, bit.bor(ImGuiWindowFlags.NoScrollbar, ImGuiWindowFlags.NoScrollWithMouse)) then
+            local bodyFallbackY = math.max(0.0, (tonumber(imgui.GetWindowHeight()) or 0.0) - (tonumber(imgui.GetCursorPosY()) or 0.0) - (tonumber(state.window.padY) or 0.0));
+            local _, bodyAvailY = getAvailXY(imgui.GetContentRegionAvail(), bodyFallbackY);
+            state.window.heightSettingsContent = math.max((state.window.scale or 1.0) * 120.0, bodyAvailY);
+            state.window.heightSettingsScroll = math.max((state.window.scale or 1.0) * 90.0, state.window.heightSettingsContent - (imgui.GetFrameHeightWithSpacing() * 1.2));
+
+            renderSettingsTitleBar("Help");
+            renderSettingsPageStatusRow();
+            imgui.BeginGroup();
+            switch(state.help.activeIndex, {
+                [1] = function() renderHelpGeneral() end,
+                [2] = function() renderHelpQsAndAs() end
+            })
+            imgui.EndGroup();
+        end
+        imgui.EndChild();
+
+        imgui.BeginChild("HelpFooterRow", { -1, helpFooterReserve }, false, bit.bor(ImGuiWindowFlags.NoScrollbar, ImGuiWindowFlags.NoScrollWithMouse));
+        local footerStartX = imgui.GetCursorPosX();
+        local footerStartY = imgui.GetCursorPosY();
+        local footerAvailX, footerAvailY = getAvailXY(imgui.GetContentRegionAvail(), helpFooterReserve);
+        footerAvailY = math.max(0.0, math.min(tonumber(footerAvailY) or 0.0, tonumber(helpFooterReserve) or 0.0));
+        local footerRowOffset = math.max(0.0, (footerAvailY - footerButtonHeight) * 0.5);
+        local footerRowY = footerStartY + footerRowOffset;
+        local function footerBtnWidth(label)
+            return math.max(0.0, tonumber(estimateButtonWidthForButtons(label, false)) or 0.0);
+        end
+        local function footerButton(label, width)
+            return uiButton(label, { tonumber(width) or footerBtnWidth(label), footerButtonHeight });
+        end
+        local doneW = math.max(0.0, tonumber(state.values.settingsFooterDoneW) or footerBtnWidth("Done"));
+        local doneH = math.max(0.0, tonumber(state.values.settingsFooterDoneH) or footerButtonHeight);
+        local now = os.clock();
+        state.values.helpFooterLogAt = state.values.helpFooterLogAt or 0;
+        if (now - state.values.helpFooterLogAt) >= 1.0 then
+            state.values.helpFooterLogAt = now;
+            writeDebugLog(string.format("help_footer scale=%.2f reserve=%.1f btnH=%.1f doneW=%.1f avail=(%.1f,%.1f) rowY=%.1f textScale=%.3f currentText=%.3f refDoneW=%.1f refDoneH=%.1f",
+                tonumber(state.window.scale) or 0.0,
+                tonumber(helpFooterReserve) or 0.0,
+                tonumber(doneH) or 0.0,
+                tonumber(doneW) or 0.0,
+                tonumber(footerAvailX) or 0.0,
+                tonumber(footerAvailY) or 0.0,
+                tonumber(footerRowY) or 0.0,
+                tonumber(state.window.textScale) or 0.0,
+                tonumber(state.window.currentTextScale) or 0.0,
+                tonumber(state.values.settingsFooterDoneW) or -1.0,
+                tonumber(state.values.settingsFooterDoneH) or -1.0
+            ));
+        end
+        imgui.SetCursorPosX(footerStartX);
+        imgui.SetCursorPosY(footerRowY);
+        -- Normalize footer text scale in this child to match Settings footer button text exactly.
+        local desiredFooterScale = tonumber(state.window.textScale) or 1.0;
+        setWindowFontScale(desiredFooterScale);
+        local basePx = tonumber(defaultFontSize) or tonumber(imgui.GetFontSize()) or 14.0;
+        local desiredFooterFontPx = basePx * desiredFooterScale;
+        local actualFooterFontPx = tonumber(imgui.GetFontSize()) or desiredFooterFontPx;
+        if actualFooterFontPx > 0.0 and math.abs(actualFooterFontPx - desiredFooterFontPx) > 0.01 then
+            local correction = desiredFooterFontPx / actualFooterFontPx;
+            setWindowFontScale((tonumber(state.window.currentTextScale) or desiredFooterScale) * correction);
+        end
+        if uiButton("Done", { doneW, doneH }) then
             imgui.SetVarValue(uiVariables["var_HelpVisible"], false);
         end
-
-        imgui.SameLine();
-        local prevScale = (state and state.window and state.window.currentTextScale) or state.window.textScale;
-        setWindowFontScale(state.window.buttonTextScale);
-        imgui.Text("OR close window to exit.");
-        setWindowFontScale(prevScale);
+        logFooterItemRect("help_left", "Done", footerRowY, helpFooterReserve);
+        imgui.EndChild();
 
         if state.initializing then
             imgui.SetVarValue(uiVariables["var_SettingsVisible"], false);
@@ -4431,7 +4565,7 @@ ashita.events.register('d3d_present', 'yield_render', function()
     elseif state.initializing then
         imgui.SetNextWindowPos({ state.window.posX , state.window.posY });
     end
-    if not imgui.Begin(string.format("%s v%s by Lotekkie", _addon.name, _addon.version), imgui.GetVarValue(uiVariables['var_WindowVisible']), bit.bor(ImGuiWindowFlags.NoResize, ImGuiWindowFlags.NoScrollbar, ImGuiWindowFlags.NoScrollWithMouse, ImGuiWindowFlags.NoCollapse)) then
+    if not imgui.Begin(string.format("%s v%s by Lotekkie", _addon.name, _addon.version), imgui.GetVarValue(uiVariables['var_WindowVisible']), bit.bor(ImGuiWindowFlags.NoResize, ImGuiWindowFlags.NoScrollbar, ImGuiWindowFlags.NoScrollWithMouse)) then
         imgui.End();
         return
     end
@@ -4786,10 +4920,8 @@ ashita.events.register('d3d_present', 'yield_render', function()
             end
             imgui.Text(string.format("%s:", string.upperfirst("Moon")));
             imgui.SameLine();
-            local memMgr = AshitaCore:GetMemoryManager();
-            local party = memMgr:GetParty();
-            local moonPct = party and tostring(party:GetMoonPercent()) or "0";
-            imgui.TextUnformatted(moonPct.."%");
+            local moonPct = getMoonPercentSafeV4();
+            imgui.TextUnformatted(string.format('%d%%', tonumber(moonPct) or 0));
         else
             if imguiShowToolTip(metricsTotalsToolTips[metric], settings.general.showToolTips) then
                 imgui.SameLine(0.0, state.window.spaceToolTip);
@@ -5362,6 +5494,16 @@ ashita.events.register('d3d_present', 'yield_render', function()
     -- CONFIRM
     local io = imgui.GetIO();
     local modalWidth, modalHeight = state.window.widthModalConfirm, state.window.heightModalConfirm;
+    local textScale = tonumber(state.window.textScale) or 1.0;
+    local textPx = math.max(8.0, (tonumber(defaultFontSize) or 12.0) * textScale);
+    local charWidthPx = math.max(4.0, textPx * 0.52);
+    local wrapWidth = math.max(140.0, tonumber(modalWidth) - ((tonumber(state.window.padX) or 5.0) * 4.0));
+    local promptLines = estimateWrappedLineCount(state.values.modalConfirmPrompt, wrapWidth, charWidthPx);
+    local helpLines = estimateWrappedLineCount(state.values.modalConfirmHelp, wrapWidth, charWidthPx);
+    local buttonRowH = math.max(tonumber(calcScaledButtonHeight()) or 0.0, textPx);
+    local spacingPad = math.max(14.0, (tonumber(state.window.padY) or 5.0) * 3.5);
+    local neededHeight = (promptLines + helpLines) * (textPx + 2.0) + buttonRowH + spacingPad + 36.0;
+    modalHeight = math.max(tonumber(modalHeight) or 0.0, math.ceil(neededHeight));
     local modalX = (io.DisplaySize.x * 0.5) - (modalWidth * 0.5);
     local modalY = (io.DisplaySize.y * 0.5) - (modalHeight * 0.5);
     imgui.SetNextWindowSize({ modalWidth, modalHeight }, ImGuiCond.Always)
@@ -5376,16 +5518,27 @@ ashita.events.register('d3d_present', 'yield_render', function()
         setWindowFontScale(state.window.textScale);
         logScaleSnapshot("confirm", "");
         local handledByButton = false;
-        imgui.Text(state.values.modalConfirmPrompt);
-        imgui.Spacing();
-        if state.values.modalConfirmHelp then
-            local r, g, b, a = 0.39, 0.96, 0.13, 1
-            if state.values.modalConfirmDanger then
-                r, g, b, a =  1, 0.615, 0.615, 1
+        local buttonRowPad = math.max(8.0, (tonumber(state.window.padY) or 5.0) * 1.4);
+        local bodyHeight = math.max(0.0, (tonumber(modalHeight) or 0.0) - buttonRowH - (buttonRowPad * 2.2));
+        if imgui.BeginChild("ConfirmBody", { -1, bodyHeight }, false) then
+            local wrapStartX = imgui.GetCursorPosX();
+            imgui.PushTextWrapPos(wrapStartX + wrapWidth);
+            imgui.Text(state.values.modalConfirmPrompt);
+            imgui.PopTextWrapPos();
+            imgui.Spacing();
+            if state.values.modalConfirmHelp ~= nil and state.values.modalConfirmHelp ~= "" then
+                local r, g, b, a = 0.39, 0.96, 0.13, 1
+                if state.values.modalConfirmDanger then
+                    r, g, b, a =  1, 0.615, 0.615, 1
+                end
+                local helpStartX = imgui.GetCursorPosX();
+                imgui.PushTextWrapPos(helpStartX + wrapWidth);
+                imgui.TextColored({ r, g, b, a }, state.values.modalConfirmHelp);
+                imgui.PopTextWrapPos();
             end
-            imgui.TextColored({ r, g, b, a }, state.values.modalConfirmHelp);
         end
-        imguiFullSep();
+        imgui.EndChild();
+        imgui.Separator();
         if uiButtonCompact("Yes") or state.initializing then
             handledByButton = true;
             imgui.CloseCurrentPopup();
@@ -5419,8 +5572,12 @@ ashita.events.register('d3d_present', 'yield_render', function()
                 writeDebugLog('ERROR cancel action missing or not a function');
             end
         end
-        imgui.SameLine();
-        imgui.Text("OR click away to cancel.");
+        imgui.Spacing();
+        local prevScale = (state and state.window and state.window.currentTextScale) or state.window.textScale;
+        setWindowFontScale(state.window.buttonTextScale);
+        imgui.AlignTextToFramePadding();
+        imgui.Text("Click outside to cancel.");
+        setWindowFontScale(prevScale);
 
         if not handledByButton and type(imgui.IsMouseClicked) == 'function' then
             local suppressClickAway = state.values.confirmIgnoreClickAway == true;
@@ -5996,9 +6153,8 @@ function renderSettingsSetAlerts()
         end
         if gathering == "fishing" then
             table.insert(soundTargets, { key = "__special:fishing_skill", kind = "special", ref = "fishing_skill" });
-        end
-        if gathering == "clamming" then
-            table.insert(soundTargets, { key = "__special:clam_break", kind = "special", ref = "clam_break" });
+        elseif gathering == "digging" then
+            table.insert(soundTargets, { key = "__special:digging_skill", kind = "special", ref = "digging_skill" });
         end
         local selectedCount = 0;
         for _, t in ipairs(soundTargets) do
@@ -6042,16 +6198,15 @@ function renderSettingsSetAlerts()
                 end
             end
             local applyFishingSkill = (not applySelectedOnly) or selectedSounds["__special:fishing_skill"] == true;
-            local applyClamBreak = (not applySelectedOnly) or selectedSounds["__special:clam_break"] == true;
+            local applyDiggingSkill = (not applySelectedOnly) or selectedSounds["__special:digging_skill"] == true;
             if gathering == "fishing" and applyFishingSkill then
                 imgui.SetVarValue(uiVariables["var_FishingSkillSoundIndex"], soundIndex);
                 imgui.SetVarValue(uiVariables["var_FishingSkillSoundFile"], "");
                 imgui.SetVarValue(uiVariables["var_FishingSkillSoundFile"], soundFile);
-            end
-            if gathering == "clamming" and applyClamBreak then
-                imgui.SetVarValue(uiVariables["var_ClamBreakSoundIndex"], soundIndex);
-                imgui.SetVarValue(uiVariables["var_ClamBreakSoundFile"], "");
-                imgui.SetVarValue(uiVariables["var_ClamBreakSoundFile"], soundFile);
+            elseif gathering == "digging" and applyDiggingSkill then
+                imgui.SetVarValue(uiVariables["var_DiggingSkillSoundIndex"], soundIndex);
+                imgui.SetVarValue(uiVariables["var_DiggingSkillSoundFile"], "");
+                imgui.SetVarValue(uiVariables["var_DiggingSkillSoundFile"], soundFile);
             end
             for _, def in ipairs(defs) do
                 local eventKey = "__event:" .. tostring(def.key);
@@ -6129,35 +6284,36 @@ function renderSettingsSetAlerts()
         end
         -- /Fishing Skillup
 
-        -- Clamming break
-        if gathering == "clamming" then
+        -- Digging Skillup
+        if gathering == "digging" then
             imgui.AlignTextToFramePadding();
-            local clamCheckVar = { selectedSounds["__special:clam_break"] == true };
-            if imgui.Checkbox("##set_alert_special_chk_clam_break", clamCheckVar) then
-                selectedSounds["__special:clam_break"] = clamCheckVar[1] == true;
+            local diggingCheckVar = { selectedSounds["__special:digging_skill"] == true };
+            if imgui.Checkbox("##set_alert_special_chk_digging_skill", diggingCheckVar) then
+                selectedSounds["__special:digging_skill"] = diggingCheckVar[1] == true;
             end
             imgui.SameLine();
-            if imguiShowToolTip("Set a sound alert for when your clamming bucket breaks.", settings.general.showToolTips) then
+            if imguiShowToolTip("Set a sound alert for when you receive a digging skill-up.", settings.general.showToolTips) then
                 imgui.SameLine(0.0, state.window.spaceToolTip);
             end
-            if uiButton("Play##ClamBreak") then
-                local soundFile = imgui.GetVarValue(uiVariables["var_ClamBreakSoundFile"]);
+            if uiButton("Play##DiggingSkill") then
+                local soundFile = imgui.GetVarValue(uiVariables["var_DiggingSkillSoundFile"]);
                 if soundFile ~= "" then
                     ashita.misc.play_sound(string.format(_addon.path.."sounds\\%s", soundFile));
                 end
             end
             imgui.SameLine();
             imgui.PushItemWidth(state.window.widthWidgetDefault - 45);
-            if imgui.Combo("Bucket Break", uiVariables["var_ClamBreakSoundIndex"], getSoundOptions()) then
-                local soundIndex = imgui.GetVarValue(uiVariables["var_ClamBreakSoundIndex"]);
+            if imgui.Combo("Skill-Up", uiVariables["var_DiggingSkillSoundIndex"], getSoundOptions()) then
+                local soundIndex = imgui.GetVarValue(uiVariables["var_DiggingSkillSoundIndex"]);
                 local soundFile = sounds[soundIndex];
-                imgui.SetVarValue(uiVariables["var_ClamBreakSoundFile"], "");
-                imgui.SetVarValue(uiVariables["var_ClamBreakSoundFile"], soundFile);
+                imgui.SetVarValue(uiVariables["var_DiggingSkillSoundFile"], "");
+                imgui.SetVarValue(uiVariables["var_DiggingSkillSoundFile"], soundFile);
             end
             imgui.PopItemWidth();
             imgui.Separator();
         end
-        -- /Clamming break
+        -- /Digging Skillup
+
         imgui.Spacing();
 
         for _, yield in ipairs(sortedYields) do
@@ -6778,55 +6934,57 @@ end
 -- desc: Renders the general help section with the help window.
 ---------------------------------------------------------------------------------------------------
 function renderHelpGeneral()
-    if imgui.BeginChild("HelpGeneral", { -1, state.window.heightSettingsContent }, true) then
-        setWindowFontScale(state.window.textScale);
+    if imgui.BeginChild("HelpGeneral", { -1, -1 }, true) then
         imgui.Spacing();
-        imgui.PushTextWrapPos(imgui.GetContentRegionAvail());
+        local wrapStartX = imgui.GetCursorPosX();
+        local wrapAvailX = getAvailX(imgui.GetContentRegionAvail());
+        imgui.PushTextWrapPos(wrapStartX + wrapAvailX);
         if state.firstLoad then
-            imgui.TextColored({ 1, 1, 0.54, 1 }, "Welcome to Yield!"); imgui.Separator();
-            imgui.Text("Before you begin, please take a moment to read through the following general information and common questions to familiarize yourself.");
-            imgui.Text("If you would like to read this later you can open this window anytime by click the 'Help' button located at the bottom of the app.");
+            imgui.TextColored({ 1, 1, 0.54, 1 }, "Welcome to Yield"); imgui.Separator();
+            imgui.Text("This guide covers the core workflow, common tasks, and troubleshooting steps.");
+            imgui.Text("You can reopen this Help window at any time from the main window footer.");
             imguiHalfSep(true);
         end
         imgui.TextColored({ 1, 1, 0.54, 1 }, "Navigating Yield"); imgui.Separator();
-        imgui.Text("Your main tool for navigating Yield is the mouse. If you hover over controls and items in the interface, Yield will provide contextual explanations. Take your time and explore.");
-        imgui.Text("The real power of Yield comes from within its Settings window. There are a variety of features and customization options there to accommodate almost every gatherer's need.");
+        imgui.Text("Yield is designed for mouse-first navigation. Hover controls to view contextual tooltips.");
+        imgui.Text("Most configuration is available in Settings, including pricing, colors, alerts, reports, and scaling.");
         imguiHalfSep(true);
         imgui.TextColored({ 1, 1, 0.54, 1 }, "Gathering"); imgui.Separator();
-        imgui.Text("Yield supports every gathering type in the game and switching between them here is a breeze, simply click on the icons at the top of the Main window. If you hover your mouse over them, Yield will tell you which gathering type you are switching to. If you start gathering and forget to switch, don't worry, Yield will automatically switch to the correct type and begin working to keep track of your stats!");
+        imgui.Text("Yield supports all gathering types. Use the top buttons in the main window to switch modes.");
+        imgui.Text("If gathering activity is detected for another mode, Yield can automatically switch and continue tracking.");
         imgui.Spacing();
-        imgui.Text("Don't forget to set those prices! Before heading out to begin gathering, it is recommended that you set your prices for yields within the Settings/Set Prices window. If you forget for some reason, that's ok, you can always update the prices later and recalculate your Estimated Value from within the same window.");
+        imgui.Text("Before gathering, set your prices in Settings -> Set Prices for accurate Estimated Value calculations.");
         imgui.Spacing();
-        imgui.Text("Yield is intelligent and will begin tracking and recording for you without the need for you to do anything first. After you load Yield, simply start gathering and watch the magic happen!");
+        imgui.Text("Tracking starts automatically after load. You can still edit counts, prices, and values at any time.");
         imguiHalfSep(true);
         imgui.TextColored({ 1, 1, 0.54, 1 }, "Settings"); imgui.Separator();
-        imgui.Text("Yield automatically saves all the changes you make in your Settings window each time the Settings window is closed. You do not need to worry about reloading and losing your Prices/Colors/Alerts or any of your current metrics. When you exit the game and come back, everything will be right where you left it.");
+        imgui.Text("Settings are persisted automatically. Your configured prices, colors, alerts, scale, and tracked state are retained across sessions.");
         imguiHalfSep(true);
         imgui.TextColored({ 1, 1, 0.54, 1 }, "Alerts"); imgui.Separator();
-        imgui.Text("Yield ships with a variety of sounds, used for alerts, out of the box. If you find yourself wanting to add custom sounds, it couldn't be easier. All sounds used for Yield alerts can be found within the /sounds folder. To add a new sound, ensure the sound file is in .wav format (e.g. my_new_sound.wav), and drop it into /sounds. After that, reload Yield and your new sound should be available in all sound selection drop-downs.")
+        imgui.Text("Yield includes built-in alert sounds.");
+        imgui.Text("To add custom alerts, place .wav files in the /sounds folder, then reload Yield.");
         imguiHalfSep(true);
         imgui.TextColored({ 1, 1, 0.54, 1 }, "Reports"); imgui.Separator();
-        imgui.Text("Yield allows you to generate detailed reports using the metrics it has tracked while you gathered. You do not need to use Yield to manage these files but these reports can be read and deleted from within the Settings/Reports window. These files are stored locally with the /reports folder of the Yield addon. It is safe to remove these files even while Yield is loaded. Yield will inform you that the files no longer exist if you attempt to read them.");
-        imgui.Text("Generation of reports can occur both manually and automatically. If you enable automatic generation of reports Yield will generate a report both when you zone and when you reset the data for a particular gathering type.");
-        imgui.Text("While automatic report generation can happen when you zone, it won't always happen when you zone. Yield will attempt to determine when it should generate on zone change based on your activity.");
+        imgui.Text("Yield can generate detailed report files from tracked session data.");
+        imgui.Text("Reports can be generated manually or automatically (on relevant zone/reset events).");
+        imgui.Text("Reports are stored locally in the addon /reports folder and can be read or deleted from Settings -> Reports.");
         imguiHalfSep(true);
-        imgui.TextColored({ 1, 1, 0.54, 1 }, "Tips/Tricks"); imgui.Separator();
-        imgui.Text("1. Double-click on the title bar of any window to minimize it.");
-        imgui.Text("2. left-click or right-click on your plots within the Main window to cycle the display of their labels.");
-        imgui.Text("3. left-click or right-click on the yields list within the Main window to cycle the sorting methods of the list.");
-        imgui.Text("4. If you forget to shut off your timer when you walk away from Yield, it will automatically shut them off for you after approx. 5 minutes.");
-        imgui.Text("5. You can Double-click on a file name in Reports to view its contents rather than using the Read button.");
-        imgui.Text("6. You can left-click drag on the R: G: B: A: color boxes with your mouse to change their values quickly. You can also left-click on the main color box to change color input methods.");
-        imgui.Text("7. You can view the moon percentage by switching to the digging gathering type.");
+        imgui.TextColored({ 1, 1, 0.54, 1 }, "Tips"); imgui.Separator();
+        imgui.Text("1. Double-click the primary window title bar to collapse or expand it.");
+        imgui.Text("2. Left or right-click the graph areas in the main window to cycle label display formats.");
+        imgui.Text("3. Left or right-click empty space in the yield list to change sort mode.");
+        imgui.Text("4. Timers stop automatically after inactivity to prevent accidental overcounting.");
+        imgui.Text("5. In Reports, double-click a file to read it quickly.");
+        imgui.Text("6. Color controls support drag adjustment and alternate input modes.");
         imguiHalfSep(true);
-        imgui.TextColored({ 1, 1, 0.54, 1 }, "Bugs/Errors"); imgui.Separator();
-        imgui.Text("Unfortunately, nothing is perfect, not even Yield. You may come across a problem while using Yield to help you become the ultimate gatherer. I understand the frustration of these occurrences and that is why I added an easy in-app way to report these problems directly to me so I can quickly get the issues resolved.");
-        imgui.Text("To report an issue directly to me, simply head on over to Settings/Feedback. Enter a title, an explanation, and hit submit.");
-        imgui.Text("By taking a mere moment to send a report, you are effectively taking part in the active development of Yield and helping it become even better. This time you take to do so is greatly appreciated!");
+        imgui.TextColored({ 1, 1, 0.54, 1 }, "Troubleshooting"); imgui.Separator();
+        imgui.Text("If behavior appears incorrect, reload Yield first.");
+        imgui.Text("If issues continue, submit a report through Settings -> Feedback with clear reproduction steps.");
         imguiHalfSep(true);
         imgui.TextColored({ 1, 1, 0.54, 1 }, "Text Commands"); imgui.Separator();
-        imgui.Text("Yield has a few text commands to quickly load/reload/unload. To see a full list of the available commands type: '/yield help' in your chat while Yield is loaded.");
+        imgui.Text("Use '/yield help' in chat to view all supported commands, including load/reload/unload options.");
         imgui.Spacing();
+        imgui.PopTextWrapPos();
         imgui.EndChild();
     end
 end
@@ -6836,39 +6994,41 @@ end
 -- desc: Renders the Q's and A's section with the help window.
 ---------------------------------------------------------------------------------------------------
 function renderHelpQsAndAs()
-    if imgui.BeginChild("HelpQnA", { -1, state.window.heightSettingsContent }, true) then
-        setWindowFontScale(state.window.textScale);
+    if imgui.BeginChild("HelpQnA", { -1, -1 }, true) then
         imgui.Spacing();
-        imgui.PushTextWrapPos(imgui.GetContentRegionAvail());
+        local wrapStartX = imgui.GetCursorPosX();
+        local wrapAvailX = getAvailX(imgui.GetContentRegionAvail());
+        imgui.PushTextWrapPos(wrapStartX + wrapAvailX);
         imgui.Separator();
         imgui.TextColored({ 1, 1, 0.54, 1 }, "Q: Is this addon available for Windower?"); imgui.Separator();
-        imgui.Text("A: Unfortunately, No. Windower does not currently offer the technology used to create this addon. If they ever do, I will absolutely port it over. ")
+        imgui.Text("A: Not currently. Yield depends on features available in Ashita. If Windower reaches parity in the future, a port can be evaluated.");
         imguiFullSep();
         imgui.TextColored({ 1, 1, 0.54, 1 }, "Q: Why isn't feature X/Y/Z implemented?"); imgui.Separator();
-        imgui.Text("A: I'm positive many of you out there have some amazing ideas on how to make Yield better. I'd love to hear them! You can contact me through Feedback in Settings, by email (sjshovan@gmail.com), or on discord (LoTekkie #6070).")
+        imgui.Text("A: Feature requests are welcome. Please submit ideas through Settings -> Feedback with the expected behavior and use case.");
         imguiFullSep();
         imgui.TextColored({ 1, 1, 0.54, 1 }, "Q: How can I donate/support?"); imgui.Separator();
-        imgui.Text("A: Head on over to the About section in Settings. There you can see some ways that I am able to receive your support. Thank you!");
+        imgui.Text("A: Open Settings -> About for current project links and optional support options.");
         imguiFullSep();
         imgui.TextColored({ 1, 1, 0.54, 1 }, "Q: I have upgraded from a previous version now everything went bonkers! What do I do?"); imgui.Separator();
-        imgui.Text("A: If you reach a scenario where Yield wont display correctly or is acting strange, first try reloading the addon. If you are still experiencing issues try the following steps:")
+        imgui.Text("A: If the UI appears incorrect after an update, reload Yield first. If issues remain, follow these steps:");
         imgui.Text("1. Exit out of Final Fantasy 11.");
-        imgui.Text("2. Navigate to the Yield addon and delete your settings/ folder.");
-        imgui.Text("3. Start Final Fantasy 11 and load Yield.")
-        imgui.Text("If you are still experiencing issues, reach out to me and I will attempt to solve them.");
+        imgui.Text("2. Navigate to the Yield addon and remove the settings folder for your character profile.");
+        imgui.Text("3. Start Final Fantasy 11 and load Yield.");
+        imgui.Text("If the issue persists, submit details through Settings -> Feedback.");
         imguiFullSep();
         imgui.TextColored({ 1, 1, 0.54, 1 }, "Q: I cannot find the Yield window! What do I do?"); imgui.Separator();
-        imgui.Text("A: Type /yield find or /yld f in your chat bar. This will force the Yield window to return to the top left of your screen.");
+        imgui.Text("A: Use '/yield find' (or '/yld f') in chat to move the main window to the top-left of the screen.");
         imguiFullSep();
         imgui.TextColored({ 1, 1, 0.54, 1 }, "Q: Where can I share ideas or follow updates?"); imgui.Separator();
-        imgui.Text("A: Use Settings -> Feedback to send ideas and bug reports, or visit the project issues page at https://github.com/Sjshovan/Ashita-Yield/issues.");
+        imgui.Text("A: Use Settings -> Feedback for in-app submissions, or use the project issues page at https://github.com/Sjshovan/Ashita-Yield/issues.");
         imguiFullSep();
         imgui.TextColored({ 1, 1, 0.54, 1 }, "Q: Have you created any other FFXI addons?"); imgui.Separator();
-        imgui.Text("A: Yes, I have also authored Mount Muzzle(Windower+Ashita) and Battle Stations(Windower). You can obtain these through their respective launchers.");
+        imgui.Text("A: Yes. Other published addons include Mount Muzzle and Battle Stations.");
         imguiFullSep();
         imgui.TextColored({ 1, 1, 0.54, 1 }, "Q: I have a question that I don't see here. How do I contact you?"); imgui.Separator();
-        imgui.Text("A: You can contact me through Feedback in Settings, by email (sjshovan@gmail.com), or on discord (LoTekkie #6070).");
+        imgui.Text("A: Submit your question through Settings -> Feedback.");
         imgui.Spacing();
+        imgui.PopTextWrapPos();
         imgui.EndChild();
     end
 end

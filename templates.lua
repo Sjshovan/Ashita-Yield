@@ -125,6 +125,7 @@ defaultSettingsTemplate =
         targetSoundFile       = "",
         autoGenReports        = true,
         fishingSkillSoundFile = "",
+        diggingSkillSoundFile = "",
         clamBreakSoundFile    = "",
         textScaleBase         = 1.15,
         textScaleFactor       = 0.45,
