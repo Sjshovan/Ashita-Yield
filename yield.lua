@@ -29,7 +29,7 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 addon.name = 'yield';
 addon.desc = 'Track and edit a variety of metrics related to gathering within a simple GUI.';
 addon.author = 'Sjshovan (LoTekkie) Sjshovan@Gmail.com';
-addon.version = '1.0.4';
+addon.version = '2.0';
 
 _addon = {}; -- For compatibility
 _addon.name = 'Yield';
@@ -494,7 +494,8 @@ local helpTable =
         helpTypeEntry('Description', _addon.description),
         helpTypeEntry('Author', _addon.author),
         helpTypeEntry('Version', _addon.version),
-        helpTypeEntry('Support/Donate', "https://Paypal.me/Sjshovan OR For Gil donations: I play on Wings private server! (https://www.wingsxi.com/wings/) My in-game name is LoTekkie."),
+        helpTypeEntry('Community', "Report issues, share ideas, and contribute at https://github.com/Sjshovan/Ashita-Yield/issues"),
+        helpTypeEntry('Support', "Optional support: https://Paypal.me/Sjshovan"),
         helpSeparator('=', 23),
     }
 }
@@ -553,6 +554,7 @@ local uiVariables =
     ["var_IssueTitle"]             = { '' },
     ["var_IssueBody"]              = { '' },
     ['var_ReportSelected']         = { 0 },
+    ["var_ReportFontScale"]        = { 1.0 },
 }
 
 local function clampWindowScale(scale)
@@ -930,6 +932,7 @@ local function logScaleSnapshot(tag, extra)
 end
 
 local colorSavePending = false;
+local applyDefaultButtonTooltip;
 local function queueColorSave(context)
     if colorSavePending then
         return;
@@ -943,6 +946,7 @@ local function queueColorSave(context)
 end
 
 local function uiButton(...)
+    local label = select(1, ...);
     local padX = 4.0;
     local padY = 3.0;
     if state and state.window then
@@ -952,7 +956,32 @@ local function uiButton(...)
     imgui.PushStyleVar(ImGuiStyleVar.FramePadding, { padX, padY });
     local pressed = imgui.Button(...);
     imgui.PopStyleVar();
+    if type(applyDefaultButtonTooltip) == "function" then
+        applyDefaultButtonTooltip(label);
+    end
     return pressed;
+end
+
+local function uiArrowButton(id, dir, fallbackLabel, fallbackSize)
+    local padX = 4.0;
+    local padY = 3.0;
+    if state and state.window then
+        padX = padX * (tonumber(state.window.buttonSizeXScale) or 1.0);
+        padY = padY * (tonumber(state.window.buttonSizeYScale) or 1.0);
+    end
+
+    if type(imgui.ArrowButton) == 'function' then
+        imgui.PushStyleVar(ImGuiStyleVar.FramePadding, { padX, padY });
+        local ok, pressed = pcall(function()
+            return imgui.ArrowButton(tostring(id or "##arrow"), tonumber(dir) or 0);
+        end);
+        imgui.PopStyleVar();
+        if ok then
+            return pressed == true;
+        end
+    end
+
+    return uiButton(fallbackLabel or "^", fallbackSize);
 end
 
 local function calcScaledButtonHeight()
@@ -1017,6 +1046,70 @@ local SETTINGS_HEADER_LINE_COLOR = { 0.24, 0.25, 0.27, 1.0 }; -- neutral gray
 local SETTINGS_HEADER_BTN_COLOR = { 0.24, 0.25, 0.27, 1.0 };
 local SETTINGS_HEADER_BTN_HOVER = { 0.34, 0.36, 0.38, 1.0 };
 local SETTINGS_HEADER_BTN_ACTIVE = { 0.34, 0.36, 0.38, 1.0 };
+local defaultButtonTooltips =
+{
+    ["Exit"] = "Unload Yield.",
+    ["Reload"] = "Reload Yield.",
+    ["Reset"] = "Reset current gathering metrics and timer.",
+    ["Settings"] = "Open Yield settings.",
+    ["Help"] = "Open Yield help.",
+    ["Done"] = "Save changes and close settings.",
+    ["Save"] = "Save current settings.",
+    ["Cancel"] = "Discard unsaved changes.",
+    ["Use Defaults"] = "Restore defaults for this page.",
+    ["Defaults"] = "Restore default values.",
+    ["Apply"] = "Apply current changes.",
+    ["Read"] = "Read the selected report.",
+    ["Close"] = "Close the active report view.",
+    ["Delete"] = "Delete selected report files.",
+    ["Generate"] = "Generate a new report.",
+    ["Open Issues"] = "Open the Yield GitHub issues page.",
+    ["Open Repo"] = "Open the Yield GitHub repository.",
+    ["Open Discord"] = "Open the Ashita community Discord.",
+    ["Support Development"] = "Open the Yield support page.",
+    ["Recalculate Value"] = "Recompute estimated value from yields and prices.",
+    ["Start"] = "Start the timer for this gathering type.",
+    ["Stop"] = "Stop the timer for this gathering type.",
+    ["Clear"] = "Reset elapsed timer to zero.",
+    ["Play"] = "Play the selected sound.",
+    ["Yes"] = "Confirm action.",
+    ["No"] = "Cancel action.",
+    ["Submit"] = "Submit feedback report.",
+    ["Go to Paypal"] = "Open donation page in browser.",
+};
+
+local function getVisibleLabelText(label)
+    if type(label) ~= "string" then
+        return nil;
+    end
+    local text = string.match(label, "^(.-)##") or label;
+    text = string.gsub(text, "^%s+", "");
+    text = string.gsub(text, "%s+$", "");
+    if text == "" then
+        return nil;
+    end
+    return text;
+end
+
+applyDefaultButtonTooltip = function(label)
+    if settings == nil or settings.general == nil or settings.general.showToolTips ~= true then
+        return;
+    end
+    if imgui.IsItemHovered == nil or imgui.SetTooltip == nil then
+        return;
+    end
+    if not imgui.IsItemHovered() then
+        return;
+    end
+    local visible = getVisibleLabelText(label);
+    if visible == nil then
+        return;
+    end
+    local tip = defaultButtonTooltips[visible];
+    if tip ~= nil and tip ~= "" then
+        imgui.SetTooltip(tip);
+    end
+end
 
 local function estimateHeaderActionWidth(label)
     local w = estimateButtonWidth(label or "", false);
@@ -1252,6 +1345,7 @@ uiActionButton = function(label)
 end
 
 uiSmallButton = function(...)
+    local label = select(1, ...);
     local padX = 3.0;
     local padY = 2.0;
     if state and state.window then
@@ -1261,6 +1355,9 @@ uiSmallButton = function(...)
     imgui.PushStyleVar(ImGuiStyleVar.FramePadding, { padX, padY });
     local pressed = imgui.SmallButton(...);
     imgui.PopStyleVar();
+    if type(applyDefaultButtonTooltip) == "function" then
+        applyDefaultButtonTooltip(label);
+    end
     return pressed;
 end
 
@@ -1276,6 +1373,9 @@ uiSmallButtonBoosted = function(label, boost)
     imgui.PushStyleVar(ImGuiStyleVar.FramePadding, { padX * b, padY * b });
     local pressed = imgui.SmallButton(label);
     imgui.PopStyleVar();
+    if type(applyDefaultButtonTooltip) == "function" then
+        applyDefaultButtonTooltip(label);
+    end
     return pressed;
 end
 
@@ -1751,6 +1851,12 @@ function loadUiVariables()
     -- All colors
     syncAllColorsVarForGather(state.settings.setColors.gathering or state.gathering, "loadUiVariables");
 
+    -- Report read-pane text scale (UI-only; not persisted).
+    local reportScale = tonumber(imgui.GetVarValue(uiVariables["var_ReportFontScale"])) or 1.0;
+    if reportScale < 1.0 then reportScale = 1.0; end
+    if reportScale > 1.5 then reportScale = 1.5; end
+    imgui.SetVarValue(uiVariables["var_ReportFontScale"], reportScale);
+
     for gathering, defs in pairs(eventAlertDefs) do
         for _, def in ipairs(defs) do
             syncAlertEventVars(gathering, def.key);
@@ -1765,19 +1871,35 @@ end
 ----------------------------------------------------------------------------------------------------
 function updatePlotPoints()
     if state.timers[state.gathering] then
-        local totalSecs = metrics[state.gathering].secondsPassed
-        metrics[state.gathering].secondsPassed = totalSecs + 1
-        local timeSpan = 3600 -- one hour
-        local timePassed = metrics[state.gathering].secondsPassed
-        local pointsWindowMax = 60 -- one min
-        local yieldsOverTime = metrics[state.gathering].totals.yields * (timeSpan / timePassed)
-        local valueOverTime =  metrics[state.gathering].estimatedValue * (timeSpan / timePassed)
-        if totalSecs >= pointsWindowMax then
-            table.remove(metrics[state.gathering].points.yields, 2)
-            table.remove(metrics[state.gathering].points.values, 2)
+        local gather = state.gathering;
+        local metric = metrics[gather];
+        if metric == nil then
+            return;
         end
-        table.insert(metrics[state.gathering].points.yields, yieldsOverTime)
-        table.insert(metrics[state.gathering].points.values, valueOverTime)
+
+        local totalSecs = tonumber(metric.secondsPassed) or 0;
+        local newSecs = totalSecs + 1;
+        metric.secondsPassed = newSecs;
+
+        local pointsWindowMax = 60; -- one minute of rendered points
+        local timeSpan = 3600;
+        local elapsed = math.max(1, tonumber(metric.secondsPassed) or 1);
+        local curYields = tonumber(metric.totals and metric.totals.yields) or 0;
+        local curValue = tonumber(metric.estimatedValue) or 0;
+        local yieldsOverTime = curYields * (timeSpan / elapsed);
+        local valueOverTime = curValue * (timeSpan / elapsed);
+
+        metric.points = metric.points or { yields = { 0 }, values = { 0 } };
+        metric.points.yields = metric.points.yields or { 0 };
+        metric.points.values = metric.points.values or { 0 };
+        table.insert(metric.points.yields, yieldsOverTime);
+        table.insert(metric.points.values, valueOverTime);
+        while #metric.points.yields > pointsWindowMax do
+            table.remove(metric.points.yields, 1);
+        end
+        while #metric.points.values > pointsWindowMax do
+            table.remove(metric.points.values, 1);
+        end
     end
 end
 
@@ -2203,22 +2325,37 @@ end
 
 ----------------------------------------------------------------------------------------------------
 -- func: getPlotRange
--- desc: Compute a stable plot range with headroom from existing points (no extra storage).
+-- desc: Compute plot range using zero-baseline and a persistent high-water max.
 ----------------------------------------------------------------------------------------------------
-local function getPlotRange(points, floorMax)
-    local maxVal = tonumber(floorMax) or 1.0;
-    if points ~= nil then
+local function getPlotRange(points, floorMax, plotKey)
+    local observedMax = 0.0;
+    if type(points) == "table" then
         for _, v in ipairs(points) do
-            local n = tonumber(v) or 0.0;
-            if n > maxVal then
-                maxVal = n;
+            local n = tonumber(v);
+            if n ~= nil and n > observedMax then
+                observedMax = n;
             end
         end
     end
-    if maxVal < 1.0 then maxVal = 1.0; end
-    -- Add headroom so long-running averages do not pin to the top edge.
-    local padded = maxVal * 1.20;
-    return 0.0, padded;
+    if observedMax <= 0.0 then
+        observedMax = tonumber(floorMax) or 1.0;
+    end
+    if observedMax < 1.0 then
+        observedMax = 1.0;
+    end
+
+    local highWater = observedMax;
+    if plotKey ~= nil and state ~= nil and state.values ~= nil then
+        state.values.plotHighWater = state.values.plotHighWater or {};
+        local prevHigh = tonumber(state.values.plotHighWater[plotKey]) or 0.0;
+        if prevHigh > highWater then
+            highWater = prevHigh;
+        else
+            state.values.plotHighWater[plotKey] = highWater;
+        end
+    end
+
+    return 0.0, highWater;
 end
 
 ----------------------------------------------------------------------------------------------------
@@ -2409,9 +2546,22 @@ end
 function queueAddonCommand(command)
     local cm = AshitaCore and AshitaCore.GetChatManager and AshitaCore:GetChatManager() or nil;
     if cm and cm.QueueCommand then
-        cm:QueueCommand(command, 1);
-        writeDebugLog(string.format('queueAddonCommand ok: %s', tostring(command)));
-        return true;
+        local attempts = {
+            function() cm:QueueCommand(1, command); end,
+            function() cm:QueueCommand(command, 1); end,
+            function() cm:QueueCommand(-1, command); end,
+            function() cm:QueueCommand(-1, 1, command); end,
+        };
+        for i, fn in ipairs(attempts) do
+            local ok, err = pcall(fn);
+            if ok then
+                writeDebugLog(string.format('queueAddonCommand ok attempt=%d cmd=%s', tonumber(i) or 0, tostring(command)));
+                return true;
+            end
+            writeDebugLog(string.format('queueAddonCommand attempt=%d failed cmd=%s err=%s', tonumber(i) or 0, tostring(command), tostring(err)));
+        end
+        writeDebugLog(string.format('queueAddonCommand failed (all signatures) cmd=%s', tostring(command)));
+        return false;
     end
     writeDebugLog(string.format('queueAddonCommand failed (chat manager unavailable): %s', tostring(command)));
     return false;
@@ -2654,8 +2804,27 @@ local function applyAlertsDefaults(gathering)
     end
 end
 
+local function getActiveReportsGathering()
+    local rawGathering = state and state.settings and state.settings.reports and state.settings.reports.gathering;
+    local gathering = rawGathering;
+    if gathering == nil or gathering == "" then
+        gathering = state and state.gathering or nil;
+    end
+    if gathering == nil or gathering == "" then
+        gathering = "harvesting";
+    end
+    if tostring(rawGathering or "") ~= tostring(gathering) then
+        writeDebugLog(string.format('reports gathering fallback raw=%s resolved=%s', tostring(rawGathering), tostring(gathering)));
+    end
+    state.settings = state.settings or {};
+    state.settings.reports = state.settings.reports or {};
+    state.settings.reports.gathering = gathering;
+    reports[gathering] = reports[gathering] or {};
+    return gathering;
+end
+
 local function generateReportsFromFooter()
-    local gathering = state.settings.reports.gathering;
+    local gathering = getActiveReportsGathering();
     if state.values.genReportDisabled then
         state.values.reportsStatusText = "Generate is on cooldown.";
         return;
@@ -2663,7 +2832,7 @@ local function generateReportsFromFooter()
     state.values.currentReportName = nil;
     if generateGatheringReport(gathering) then
         refreshReportsForGather(gathering);
-        local sortedReports = table.sortReportsByDate(reports[gathering], true);
+        local sortedReports = table.sortReportsByDate(reports[gathering] or {}, true);
         writeDebugLog(string.format('reports post-generate gather=%s sorted_count=%s first=%s',
             tostring(gathering), tostring(#sortedReports), tostring(sortedReports[1])));
         if sortedReports[1] ~= nil then
@@ -3254,7 +3423,7 @@ end);
 ashita.events.register('text_in', 'yield_text_in', function(e)
     if (e.blocked) then state.attempting = false; return; end
 
-    -- Keep filtering while idle, but do not drop active gather attempts on custom/private server modes.
+    -- Keep filtering while idle, but do not drop active gather attempts on non-standard server modes.
     local mode = bit.band(e.mode or 0, 0x000000FF);
     local acceptedModes = {919, 654, 702, 662, 664, 129};
     if not state.attempting and not table.hasvalue(acceptedModes, e.mode) and not table.hasvalue(acceptedModes, mode) then
@@ -3915,11 +4084,14 @@ local SettingsWindow =
                 logFooterItemRect("settings_right", "Generate", footerRowY, settingsFooterReserve);
                 if generatePressed then
                     if not generateDisabled then
-                        generateReportsFromFooter();
+                        runSafe('reports_footer_generate', function()
+                            generateReportsFromFooter();
+                        end);
                     end
                 end
                 if settings.general.showToolTips and imgui.IsItemHovered() then
-                    imgui.SetTooltip(string.format("Manually generate a %s report using its current yield data.", string.upperfirst(state.settings.reports.gathering)));
+                    local gatherForTip = getActiveReportsGathering();
+                    imgui.SetTooltip(string.format("Manually generate a %s report using its current yield data.", string.upperfirst(tostring(gatherForTip))));
                 end
                 imguiPopDisabled(generateDisabled);
             end
@@ -4462,7 +4634,17 @@ ashita.events.register('d3d_present', 'yield_render', function()
         imgui.SameLine(0.0, state.window.spaceToolTip);
     end
     if imgui.BeginChild("Header", { -1, state.window.heightHeaderMain }, false, bit.bor(ImGuiWindowFlags.NoScrollbar, ImGuiWindowFlags.NoScrollWithMouse)) then
-        setWindowFontScale(state.window.textScale);
+        local desiredHeaderScale = tonumber(state.window.textScale) or 1.0;
+        setWindowFontScale(desiredHeaderScale);
+        -- Some ImGui wrappers apply child font scale relative to parent window scale.
+        -- Normalize to target pixel size so header text exactly matches metrics text.
+        local defaultPx = tonumber(defaultFontSize) or tonumber(imgui.GetFontSize()) or 14.0;
+        local desiredHeaderFontPx = defaultPx * desiredHeaderScale;
+        local actualHeaderFontPx = tonumber(imgui.GetFontSize()) or desiredHeaderFontPx;
+        if actualHeaderFontPx > 0.0 and math.abs(actualHeaderFontPx - desiredHeaderFontPx) > 0.01 then
+            local correction = desiredHeaderFontPx / actualHeaderFontPx;
+            setWindowFontScale((tonumber(state.window.currentTextScale) or desiredHeaderScale) * correction);
+        end
         local progress = calcTargetProgress();
         local targetValue = tonumber(settings.general.targetValue) or 0;
         local curValue = tonumber(metrics[state.gathering].estimatedValue) or 0;
@@ -4474,6 +4656,7 @@ ashita.events.register('d3d_present', 'yield_render', function()
         else
             progressLabel = string.format("%s/%s", curValue, targetValue);
         end
+        logScaleSnapshot("main_header_progress", string.format("label_mode=%s", tostring(progressLabelIndex)));
 
         local lr, lg, lb, la = 0.39, 0.96, 0.13, 1; -- success
         if progress < 1 and progress >= 0.5 then
@@ -4481,8 +4664,6 @@ ashita.events.register('d3d_present', 'yield_render', function()
         elseif progress < 0.5 then
             lr, lg, lb, la = 1, 0.615, 0.615, 1; -- danger
         end
-        local barPosX = imgui.GetCursorPosX();
-        local barPosY = imgui.GetCursorPosY();
         local availW = imgui.GetContentRegionAvail();
         local barWidth = tonumber(availW) or 0;
         if type(availW) == "table" and availW.x ~= nil then
@@ -4491,12 +4672,13 @@ ashita.events.register('d3d_present', 'yield_render', function()
         if barWidth <= 0 then
             barWidth = imgui.GetWindowWidth() - ((state.window.padX or 5) * 2);
         end
-        -- Hide built-in progress label text (wrapper forces a right-side % overlay).
+        local barPosX = imgui.GetCursorPosX();
+        local barPosY = imgui.GetCursorPosY();
+        -- Hide built-in progress label and render centered text manually.
         imgui.PushStyleColor(ImGuiCol_Text, { 0, 0, 0, 0 });
-        imgui.ProgressBar(progress, -1, state.window.heightHeaderMain, "");
+        imgui.ProgressBar(progress, { -1, state.window.heightHeaderMain }, "");
         local progressHovered = (imgui.IsItemHovered ~= nil and imgui.IsItemHovered() == true);
         imgui.PopStyleColor();
-        -- Draw a single centered colored label to avoid wrapper-specific overlay issues.
         local textWidth = (#progressLabel * imgui.GetFontSize() * 0.52);
         if imgui.CalcTextSize ~= nil then
             local okSize, sz = pcall(function() return imgui.CalcTextSize(progressLabel); end);
@@ -4594,6 +4776,7 @@ ashita.events.register('d3d_present', 'yield_render', function()
 
     -- Use dedicated metrics text tuning for metric-heavy sections.
     setWindowFontScale(state.window.metricsTextScale);
+    logScaleSnapshot("main_metrics_block", "");
 
     -- totals metrics
     for total, metric in pairs(table.sortKeysByLength(metrics[state.gathering].totals, true)) do
@@ -4612,6 +4795,9 @@ ashita.events.register('d3d_present', 'yield_render', function()
                 imgui.SameLine(0.0, state.window.spaceToolTip);
             end
             imgui.Text(string.format("%s:", string.upperfirst(metric)));
+            if settings.general.showToolTips and imgui.IsItemHovered() then
+                imgui.SetTooltip(tostring(metricsTotalsToolTips[metric] or ""));
+            end
             imgui.SameLine();
             imgui.Text(tostring(metrics[state.gathering].totals[metric]))
         end
@@ -4663,6 +4849,9 @@ ashita.events.register('d3d_present', 'yield_render', function()
         toolName = toolName.."s"
     end
     imgui.Text(toolName..":");
+    if settings.general.showToolTips and imgui.IsItemHovered() then
+        imgui.SetTooltip("Current tool count for this gathering type.");
+    end
     imgui.SameLine();
 
     local value = tostring(avail);
@@ -4691,6 +4880,9 @@ ashita.events.register('d3d_present', 'yield_render', function()
         imgui.PushStyleColor(ImGuiCol_Text, { 0.77, 0.83, 0.80, 1 }); -- plain
     end
     imgui.Text("Inventory:")
+    if settings.general.showToolTips and imgui.IsItemHovered() then
+        imgui.SetTooltip("Available slots in your main inventory.");
+    end
     imgui.SameLine();
 
     local avail = playerStorage['available'] or 0;
@@ -4705,6 +4897,9 @@ ashita.events.register('d3d_present', 'yield_render', function()
         imgui.SameLine(0.0, state.window.spaceToolTip);
     end
     imgui.Text("Time Passed:");
+    if settings.general.showToolTips and imgui.IsItemHovered() then
+        imgui.SetTooltip("Elapsed timer used for /HR calculations.");
+    end
     imgui.SameLine();
     local r, g, b, a = 1, 0.615, 0.615, 1 -- danger
     if state.timers[state.gathering] then
@@ -4720,6 +4915,9 @@ ashita.events.register('d3d_present', 'yield_render', function()
         imgui.SameLine(0.0, state.window.spaceToolTip);
     end
     imgui.Text("Timer:")
+    if settings.general.showToolTips and imgui.IsItemHovered() then
+        imgui.SetTooltip("Start or stop tracking elapsed time for this session.");
+    end
     imgui.SameLine();
     if uiSmallButton(state.values.btnStartTimer) then
         state.timers[state.gathering] = not state.timers[state.gathering];
@@ -4745,6 +4943,9 @@ ashita.events.register('d3d_present', 'yield_render', function()
     end
 
     imgui.Text("Value:")
+    if settings.general.showToolTips and imgui.IsItemHovered() then
+        imgui.SetTooltip("Estimated total value from tracked yields and configured prices.");
+    end
     if settings.general.showToolTips then
         imgui.SameLine(0.0, state.window.spaceToolTip);
     else
@@ -4773,14 +4974,14 @@ ashita.events.register('d3d_present', 'yield_render', function()
     }
     imgui.AlignTextToFramePadding();
     local plotYieldsLabel = yieldsLabelMap[state.values.yieldsLabelIndex];
-    if imguiShowToolTip(string.format("Plot histogram of %s yields per hour (click the on plot to cycle its label displays).", string.upperfirst(state.gathering)), settings.general.showToolTips) then
+    if imguiShowToolTip(string.format("Plot histogram of %s yields per hour (L/R click on the plot to cycle its label displays).", string.upperfirst(state.gathering)), settings.general.showToolTips) then
         imgui.SameLine(0.0, state.window.spaceToolTip);
     end
 
     local yieldsPerHour = metrics[state.gathering].points.yields[#metrics[state.gathering].points.yields];
     local targetYields = 120;
     if state.gathering == "fishing" then targetYields = 90; end
-    local yieldsPlotMin, yieldsPlotMax = getPlotRange(plotYields, targetYields);
+    local yieldsPlotMin, yieldsPlotMax = getPlotRange(plotYields, nil, string.format('%s:yields', tostring(state.gathering)));
 
     if yieldsPerHour < targetYields and yieldsPerHour >= targetYields/2 then
         imgui.PushStyleColor(ImGuiCol_Text, { 1, 1, 0.54, 1 }); -- warn
@@ -4789,9 +4990,10 @@ ashita.events.register('d3d_present', 'yield_render', function()
     else
         imgui.PushStyleColor(ImGuiCol_Text, { 0.39, 0.96, 0.13, 1 }); -- success
     end
+    imgui.PushStyleColor(ImGuiCol.PlotHistogramHovered, { 0.77, 0.83, 0.80, 0.3 });
 
     imgui.PlotHistogram("", plotYields, #plotYields, 0, plotYieldsLabel, yieldsPlotMin, yieldsPlotMax, { 0.0, state.window.heightPlot });
-    imgui.PopStyleColor()
+    imgui.PopStyleColor(2)
     if imgui.IsItemClicked() then
         state.values.yieldsLabelIndex = cycleIndex(state.values.yieldsLabelIndex, 1, 3);
     end
@@ -4799,11 +5001,10 @@ ashita.events.register('d3d_present', 'yield_render', function()
         state.values.yieldsLabelIndex = cycleIndex(state.values.yieldsLabelIndex, 1, 3, -1);
     end
     if imgui.IsItemHovered() then
-        if plotYieldsLabel == "" then
-            imgui.SetTooltip(string.format("Yields/HR (%.2f)", yieldsPerHour));
-        else
-            imgui.SetTooltip("");
-        end
+        imgui.SetTooltip(string.format(
+            "Yields/HR trend\nCurrent: %.2f\nRange: 0 to session high-water\nL/R click: cycle label format",
+            yieldsPerHour
+        ));
     end
     -- /plot yields
 
@@ -4822,7 +5023,7 @@ ashita.events.register('d3d_present', 'yield_render', function()
 
     local valuesPerHour = metrics[state.gathering].points.values[#metrics[state.gathering].points.values];
     local targetValue = 30000;
-    local valuesPlotMin, valuesPlotMax = getPlotRange(plotValues, targetValue);
+    local valuesPlotMin, valuesPlotMax = getPlotRange(plotValues, nil, string.format('%s:values', tostring(state.gathering)));
 
     if valuesPerHour < targetValue and valuesPerHour >= targetValue/2 then
         imgui.PushStyleColor(ImGuiCol_Text, { 1, 1, 0.54, 1 }); -- warn
@@ -4841,11 +5042,10 @@ ashita.events.register('d3d_present', 'yield_render', function()
         state.values.valuesLabelIndex = cycleIndex(state.values.valuesLabelIndex, 1, 3, -1);
     end
     if imgui.IsItemHovered() then
-        if plotValuesLabel == "" then
-            imgui.SetTooltip(string.format("Value/HR (%.2f)", valuesPerHour));
-        else
-            imgui.SetTooltip("");
-        end
+        imgui.SetTooltip(string.format(
+            "Value/HR trend\nCurrent: %.2f\nRange: 0 to session high-water\nL/R click: cycle label format",
+            valuesPerHour
+        ));
     end
     -- /plot values
     imgui.PopItemWidth();
@@ -4854,9 +5054,7 @@ ashita.events.register('d3d_present', 'yield_render', function()
     -- MAIN_SCROLLING
     setWindowFontScale(state.window.textScale);
     imgui.AlignTextToFramePadding();
-    if imguiShowToolTip(string.format("Scrollable List of current %s yields and their amounts (L/R click on the list to cycle its sorting methods).", string.upperfirst(state.gathering)), settings.general.showToolTips) then
-        imgui.SameLine(0.0, state.window.spaceToolTip);
-    end
+    -- Intentionally no section-level tooltip here; row controls have explicit tooltips.
 
     yieldsSortMap = {}
     local sortedOk = runSafe(string.format('build_yieldsSortMap_%s', tostring(state.gathering)), function()
@@ -4887,19 +5085,34 @@ ashita.events.register('d3d_present', 'yield_render', function()
     if imgui.BeginChild("Scrolling", { -1, -footerReserve }, true) then
         -- Reset per-frame button-hover guard so list sorting clicks cannot get stuck disabled.
         state.values.yieldListBtnsHovered = false;
+        local yieldListRowHovered = false;
+        local mousePos = nil;
+        local mouseY = nil;
+        if imgui.GetMousePos ~= nil then
+            mousePos = imgui.GetMousePos();
+            if type(mousePos) == "table" then
+                mouseY = tonumber(mousePos.y or mousePos[2]);
+            end
+        end
         -- yields
         for _, item in pairs(yieldsSortMap[state.values.yieldSortIndex][1]) do
             imgui.PushID(item);
+            local rowCount = tonumber(metrics[state.gathering].yields[item]) or 0;
+            local rowPrice = tonumber(getPrice(item)) or 0;
+            local rowTotal = math.floor(rowPrice * rowCount);
+            local rowTooltip = string.format("%s\nCount: %d\nPrice: %d ea\nTotal: %d", tostring(item), rowCount, rowPrice, rowTotal);
+            local rowAdjustButtonHovered = false;
+            imgui.BeginGroup();
             imgui.BeginGroup();
             uiSmallButton("-");
             if settings.general.showToolTips and imgui.IsItemHovered() then
-                state.values.yieldListHovered = false;
+                yieldListRowHovered = true;
                 state.values.yieldListBtnsHovered = true;
-                imgui.SetTooltip(string.format("Manually subtract (-) %s", item));
-            elseif state.values.yieldListHovered then
-                state.values.yieldListBtnsHovered = false;
+                rowAdjustButtonHovered = true;
+                imgui.SetTooltip(string.format("Subtract 1 %s\nCurrent: %d", tostring(item), rowCount));
             end
             if imgui.IsItemClicked() then
+                yieldListRowHovered = true;
                 adjYield(item, -1);
                 adjTotal("yields", -1);
                 local val = getPrice(item);
@@ -4910,13 +5123,13 @@ ashita.events.register('d3d_present', 'yield_render', function()
             imgui.SameLine(0.0, 1.0);
             uiSmallButton("+");
             if settings.general.showToolTips and imgui.IsItemHovered() then
-                state.values.yieldListHovered = false;
+                yieldListRowHovered = true;
                 state.values.yieldListBtnsHovered = true;
-                imgui.SetTooltip(string.format("Manually add (+) %s", item));
-            elseif state.values.yieldListHovered then
-                state.values.yieldListBtnsHovered = false;
+                rowAdjustButtonHovered = true;
+                imgui.SetTooltip(string.format("Add 1 %s\nCurrent: %d", tostring(item), rowCount));
             end
             if imgui.IsItemClicked() then
+                yieldListRowHovered = true;
                 adjYield(item, 1);
                 adjTotal("yields", 1);
                 local val = getPrice(item);
@@ -4926,13 +5139,11 @@ ashita.events.register('d3d_present', 'yield_render', function()
             end
             imgui.EndGroup();
             if imgui.IsItemHovered() then
-                state.values.yieldListHovered = false;
+                yieldListRowHovered = true;
                 state.values.yieldListBtnsHovered = true;
-                imgui.SetTooltip("");
-            elseif state.values.yieldListHovered then
-                state.values.yieldListBtnsHovered = false
-                local sortInfo = yieldsSortMap[state.values.yieldSortIndex] or yieldsSortMap[1];
-                imgui.SetTooltip(string.format("Sort Type: %s", sortInfo and sortInfo[2] or "Unknown"));
+                if settings.general.showToolTips and not rowAdjustButtonHovered then
+                    imgui.SetTooltip(string.format("Adjust %s count", tostring(item)));
+                end
             end
             imgui.SameLine(0.0, state.window.spaceToolTip);
             local yieldSettings = settings.yields[state.gathering][item];
@@ -4947,43 +5158,73 @@ ashita.events.register('d3d_present', 'yield_render', function()
             local adjItemName = shortName or item;
 
             imgui.TextColored({ r/255, g/255, b/255, a/255 }, adjItemName..":");
+            if imgui.IsItemHovered() then
+                yieldListRowHovered = true;
+                if settings.general.showToolTips then
+                    imgui.SetTooltip(rowTooltip);
+                end
+            end
 
             imgui.SameLine(0.0, state.window.spaceToolTip);
             imgui.Text(tostring(metrics[state.gathering].yields[item]));
+            if imgui.IsItemHovered() then
+                yieldListRowHovered = true;
+                if settings.general.showToolTips then
+                    imgui.SetTooltip(rowTooltip);
+                end
+            end
 
             if settings.general.showDetailedYields then
                 local r, g, b, a = colorToRGBA(settings.general.yieldDetailsColor);
                 if a == nil or a <= 0 then a = 255; end
                 imgui.TextColored({ r/255, g/255, b/255, a/255 }, string.format("@%dea.=(%s)", getPrice(item), math.floor(getPrice(item) * metrics[state.gathering].yields[item])));
+                if imgui.IsItemHovered() then
+                    yieldListRowHovered = true;
+                    if settings.general.showToolTips then
+                        imgui.SetTooltip(rowTooltip);
+                    end
+                end
+            end
+            imgui.EndGroup();
+            if mouseY ~= nil and imgui.GetItemRectMin ~= nil and imgui.GetItemRectMax ~= nil then
+                local rowRectMin = imgui.GetItemRectMin();
+                local rowRectMax = imgui.GetItemRectMax();
+                if type(rowRectMin) == "table" and type(rowRectMax) == "table" then
+                    local rowMinY = tonumber(rowRectMin.y or rowRectMin[2]);
+                    local rowMaxY = tonumber(rowRectMax.y or rowRectMax[2]);
+                    if rowMinY ~= nil and rowMaxY ~= nil and mouseY >= rowMinY and mouseY <= rowMaxY then
+                        yieldListRowHovered = true;
+                    end
+                end
+            end
+            if imgui.IsItemHovered() then
+                yieldListRowHovered = true;
+                if settings.general.showToolTips and not rowAdjustButtonHovered then
+                    imgui.SetTooltip(rowTooltip);
+                end
             end
             imgui.PopID();
         end
         imgui.EndChild();
         if imgui.IsItemClicked() then
             state.values.yieldListClicked = true;
-            if not state.values.yieldListBtnsHovered then
+            if not state.values.yieldListBtnsHovered and not yieldListRowHovered then
                 state.values.yieldSortIndex = cycleIndex(state.values.yieldSortIndex, 1, 6);
                 writeDebugLog(string.format('yield list sort click L: index=%s', tostring(state.values.yieldSortIndex)));
+            else
+                writeDebugLog('yield list sort blocked L: row/item hover active');
             end
         end
         if imgui.IsItemClicked(1) then
             state.values.yieldListClicked = true;
-            if not state.values.yieldListBtnsHovered then
+            if not state.values.yieldListBtnsHovered and not yieldListRowHovered then
                 state.values.yieldSortIndex = cycleIndex(state.values.yieldSortIndex, 1, 6, -1);
                 writeDebugLog(string.format('yield list sort click R: index=%s', tostring(state.values.yieldSortIndex)));
-            end
-        end
-        if imgui.IsItemHovered() then
-            if table.count(metrics[state.gathering].yields) == 0 then
-                imgui.SetTooltip(string.format("Sort Type: %s", yieldsSortMap[state.values.yieldSortIndex][2]));
             else
-                if not state.values.yieldListClicked then
-                    state.values.yieldListHovered = true;
-                end
+                writeDebugLog('yield list sort blocked R: row/item hover active');
             end
-        else
-            state.values.yieldListHovered = false;
         end
+        state.values.yieldListHovered = false;
         if not imgui.IsMouseDown(1) and not imgui.IsMouseDown(0) then
             state.values.yieldListClicked = false;
         end
@@ -5031,25 +5272,27 @@ ashita.events.register('d3d_present', 'yield_render', function()
     logFooterItemRect("main_left", "Exit", footerRowY, footerReserve);
     if exitPressed then
         writeDebugLog('Exit button clicked');
-        state.actions.modalConfirmAction = function() queueAddonCommand('/addon unload yield'); end
-        state.actions.modalCancelAction = function() end
-        state.values.modalConfirmPrompt = string.format(modalConfirmPromptTemplate, "Exit");
-        state.values.modalConfirmHelp = "(All gathering data will be saved.)";
-        state.values.modalConfirmDanger = false;
-        state.values.confirmIgnoreClickAway = true;
-        imgui.OpenPopup("Yield Confirm")
+        openConfirmModal(
+            "Exit",
+            "(All gathering data will be saved.)",
+            false,
+            function()
+                queueAddonCommand('/addon unload yield');
+            end
+        );
     end
 
     setFooterButtonPos(2);
     if mainFooterButton("Reload", 2) then
         writeDebugLog('Reload button clicked');
-        state.actions.modalConfirmAction = function() queueAddonCommand('/addon reload yield'); end
-        state.actions.modalCancelAction = function() end
-        state.values.modalConfirmPrompt = string.format(modalConfirmPromptTemplate, "Reload");
-        state.values.modalConfirmHelp = "(All gathering data will be saved.)";
-        state.values.modalConfirmDanger = false;
-        state.values.confirmIgnoreClickAway = true;
-        imgui.OpenPopup("Yield Confirm")
+        openConfirmModal(
+            "Reload",
+            "(All gathering data will be saved.)",
+            false,
+            function()
+                queueAddonCommand('/addon reload yield');
+            end
+        );
     end
 
     setFooterButtonPos(3);
@@ -5070,6 +5313,10 @@ ashita.events.register('d3d_present', 'yield_render', function()
                 end
                 -- Reset the metrics..
                 metrics[gather] = table.copy(metricsTemplate);
+                if state.values ~= nil and state.values.plotHighWater ~= nil then
+                    state.values.plotHighWater[string.format('%s:yields', tostring(gather))] = nil;
+                    state.values.plotHighWater[string.format('%s:values', tostring(gather))] = nil;
+                end
                 -- Reset the timers..
                 for timerName, _ in pairs(state.timers) do
                     state.timers[timerName] = false;
@@ -5449,6 +5696,20 @@ function renderSettingsGeneral()
         if uiButton("Scale Tuning") then
             syncScaleTuningVarsFromSettings();
             state.values.openScaleTuningRequested = true;
+        end
+
+        imgui.Spacing();
+        imgui.AlignTextToFramePadding();
+        if imguiShowToolTip("Open the Help window with first-time guidance enabled for this session.", settings.general.showToolTips) then
+            imgui.SameLine(0.0, state.window.spaceToolTip);
+        end
+        if uiButton("Show First-Time Info") then
+            state.firstLoad = true;
+            state.help.activeIndex = 1;
+            imgui.SetVarValue(uiVariables["var_HelpVisible"], true);
+            imgui.SetVarValue(uiVariables["var_SettingsVisible"], false);
+            state.values.centerWindow = true;
+            writeDebugLog('manual first-time help requested from General settings');
         end
 
         imgui.PopItemWidth();
@@ -5939,11 +6200,12 @@ end
 -- desc: Renders the Reports section in settings.
 ----------------------------------------------------------------------------------------------------
 function renderSettingsReports()
-    local gathering = state.settings.reports.gathering;
+    local gathering = getActiveReportsGathering();
     state.values.reportSelectionsByGather = state.values.reportSelectionsByGather or {};
     state.values.reportSelectionsByGather[gathering] = state.values.reportSelectionsByGather[gathering] or {};
     local selectedReports = state.values.reportSelectionsByGather[gathering];
-    local sortedReports = table.sortReportsByDate(reports[gathering], true);
+    reports[gathering] = reports[gathering] or {};
+    local sortedReports = table.sortReportsByDate(reports[gathering] or {}, true);
     imgui.PushStyleVar(ImGuiStyleVar.WindowPadding, { 5, 5 });
     pushSettingsPageMenuBarSizing();
     if imgui.BeginChild("Reports", { -1, state.window.heightSettingsContent }, imgui.GetVarValue(uiVariables['var_WindowVisible']), bit.bor(ImGuiWindowFlags.MenuBar, ImGuiWindowFlags.NoResize)) then
@@ -5967,7 +6229,7 @@ function renderSettingsReports()
             imgui.Separator();
             imgui.Spacing();
         end
-        sortedReports = table.sortReportsByDate(reports[gathering], true);
+        sortedReports = table.sortReportsByDate(reports[gathering] or {}, true);
         local allReportsSelected = (#sortedReports > 0);
         for _, fileName in ipairs(sortedReports) do
             if not selectedReports[fileName] then
@@ -5992,12 +6254,12 @@ function renderSettingsReports()
         imgui.Separator();
         imgui.SetCursorPosX(0);
         imgui.PushStyleColor(ImGuiCol.Border, { 0, 0, 0, 0 });
-        local reportsAvailY = imgui.GetContentRegionAvail();
+        local _, reportsAvailY = getAvailXY(imgui.GetContentRegionAvail(), state.window.heightSettingsContent);
         local minListHeight = state.window.scale * 80.0;
         local minReadHeight = state.window.scale * 80.0;
         local controlsReserve = state.window.scale * 92.0;
         local maxListHeight = math.max(minListHeight, reportsAvailY - controlsReserve - minReadHeight);
-        state.values.reportsListHeight = state.values.reportsListHeight or math.max(minListHeight, reportsAvailY * 0.38);
+        state.values.reportsListHeight = state.values.reportsListHeight or math.max(minListHeight, reportsAvailY * 0.25);
         if state.values.reportsListHeight < minListHeight then
             state.values.reportsListHeight = minListHeight;
         elseif state.values.reportsListHeight > maxListHeight then
@@ -6006,7 +6268,7 @@ function renderSettingsReports()
         local listHeight = state.values.reportsListHeight;
         if imgui.BeginChild("Report List", { imgui.GetWindowWidth(), listHeight }, true) then
             logScaleSnapshot("settings_reports_list", "");
-            imgui.PushTextWrapPos(imgui.GetContentRegionAvail());
+            imgui.PushTextWrapPos(getAvailX(imgui.GetContentRegionAvail()));
             if state.values.forceReportListTop then
                 if imgui.SetScrollY ~= nil then
                     imgui.SetScrollY(0);
@@ -6032,10 +6294,10 @@ function renderSettingsReports()
                     imgui.SameLine();
                     if imgui.Selectable(name, imgui.GetVarValue(uiVariables["var_ReportSelected"]) == idx, ImGuiSelectableFlags_AllowDoubleClick) then
                         imgui.SetVarValue(uiVariables['var_ReportSelected'], idx);
-                        state.values.readReportDisabled = false;
                         writeDebugLog(string.format('reports select click gather=%s index=%s file=%s', tostring(gathering), tostring(idx), tostring(sortedReports[idx])));
                         if (imgui.IsMouseDoubleClicked(0)) then
                             state.values.currentReportName = sortedReports[idx];
+                            state.values.reportsListHeight = minListHeight;
                             writeDebugLog(string.format('reports select dblclick gather=%s index=%s file=%s', tostring(gathering), tostring(idx), tostring(sortedReports[idx])));
                         end
                     end
@@ -6051,12 +6313,20 @@ function renderSettingsReports()
             imgui.EndChild()
         end
         imgui.PopStyleColor();
-        local splitterHeight = math.max(4.0, state.window.scale * 6.0);
+        local splitterHeight = math.max(9.8, state.window.scale * 8.5);
+        local splitterX = imgui.GetCursorPosX();
+        local splitterY = imgui.GetCursorPosY();
+        local splitterW = getAvailX(imgui.GetContentRegionAvail());
         imgui.PushStyleColor(ImGuiCol.Button, { 0.22, 0.24, 0.25, 1 });
         imgui.PushStyleColor(ImGuiCol.ButtonHovered, { 0.30, 0.33, 0.35, 1 });
         imgui.PushStyleColor(ImGuiCol.ButtonActive, { 0.39, 0.42, 0.44, 1 });
         imgui.Button("##reports_splitter", { -1, splitterHeight });
+        local splitterAfterX = imgui.GetCursorPosX();
+        local splitterAfterY = imgui.GetCursorPosY();
         local splitterActive = (imgui.IsItemActive ~= nil and imgui.IsItemActive()) or false;
+        local splitterHovered = (imgui.IsItemHovered ~= nil and imgui.IsItemHovered()) or false;
+        imgui.SetCursorPosX(splitterAfterX);
+        imgui.SetCursorPosY(splitterAfterY);
         if splitterActive then
             local io = imgui.GetIO();
             local dy = 0;
@@ -6067,7 +6337,7 @@ function renderSettingsReports()
                 state.values.reportsListHeight = math.max(minListHeight, math.min(maxListHeight, state.values.reportsListHeight + dy));
             end
         end
-        if imgui.IsItemHovered() then
+        if splitterHovered then
             imgui.SetTooltip("Drag to resize list / read panes.");
         end
         imgui.PopStyleColor(3);
@@ -6075,56 +6345,24 @@ function renderSettingsReports()
         imgui.Separator();
         local actionRowStartX = imgui.GetCursorPosX();
         local actionRowStartY = imgui.GetCursorPosY();
-        local actionRowAvail = imgui.GetContentRegionAvail();
-        local actionLabels = { "Open", "Close", "Delete" };
-        local actionWidths = {};
-        local actionTotal = 0.0;
-        for i, label in ipairs(actionLabels) do
-            actionWidths[i] = estimateButtonWidth(label, false);
-            actionTotal = actionTotal + actionWidths[i];
-        end
-        local actionGap = 0.0;
-        if #actionLabels > 0 then
-            actionGap = (actionRowAvail - actionTotal) / (#actionLabels + 1);
-            if actionGap < 0 then actionGap = 0; end
-        end
-        local function setActionBtnPos(index)
-            local x = actionRowStartX + actionGap;
-            if index > 1 then
-                for i = 1, index - 1 do
-                    x = x + actionWidths[i] + actionGap;
-                end
-            end
-            imgui.SetCursorPosX(x);
-            imgui.SetCursorPosY(actionRowStartY);
-        end
+        local actionRowAvail = getAvailX(imgui.GetContentRegionAvail());
         local selectedIndex = tonumber(imgui.GetVarValue(uiVariables["var_ReportSelected"])) or 0;
         if selectedIndex <= 0 or sortedReports[selectedIndex] == nil then
-            for idx, _ in ipairs(sortedReports) do
-                selectedIndex = idx;
-                break;
-            end
-            if selectedIndex > 0 then
-                imgui.SetVarValue(uiVariables["var_ReportSelected"], selectedIndex);
-                writeDebugLog(string.format('reports selected fallback gather=%s index=%s file=%s', tostring(gathering), tostring(selectedIndex), tostring(sortedReports[selectedIndex])));
-            end
+            selectedIndex = 0;
+            imgui.SetVarValue(uiVariables["var_ReportSelected"], 0);
         end
-        setActionBtnPos(1);
-        local disabled = imguiPushDisabled(selectedIndex <= 0 or sortedReports[selectedIndex] == nil);
-        if uiButton("Open") then -- here
-            if selectedIndex <= 0 or sortedReports[selectedIndex] == nil then
-                for idx, _ in ipairs(sortedReports) do
-                    selectedIndex = idx;
-                    break;
-                end
-                if selectedIndex > 0 then
-                    imgui.SetVarValue(uiVariables["var_ReportSelected"], selectedIndex);
-                    writeDebugLog(string.format('reports read fallback gather=%s index=%s file=%s', tostring(gathering), tostring(selectedIndex), tostring(sortedReports[selectedIndex])));
-                end
-            end
+
+        imgui.SetCursorPosX(actionRowStartX);
+        imgui.SetCursorPosY(actionRowStartY);
+        local readDisabled = (selectedIndex <= 0 or sortedReports[selectedIndex] == nil);
+        local disabled = imguiPushDisabled(readDisabled);
+        if uiButton("Read") then
             local fname = sortedReports[selectedIndex];
             if state.values.currentReportName ~= fname then
                 state.values.currentReportName = fname;
+            end
+            if fname ~= nil then
+                state.values.reportsListHeight = minListHeight;
             end
             state.values.lastReportReadPath = nil;
             if fname ~= nil and getPlayerName() ~= "" then
@@ -6140,11 +6378,14 @@ function renderSettingsReports()
             writeDebugLog(string.format('reports read click gather=%s index=%s file=%s', tostring(gathering), tostring(selectedIndex), tostring(fname)));
         end
         if imgui.IsItemHovered() then
-            imgui.SetTooltip("Open the selected report in the pane below.");
+            imgui.SetTooltip("Read the selected report in the pane below.");
         end
         imguiPopDisabled(disabled);
-        setActionBtnPos(2);
-        disabled = imguiPushDisabled(selectedIndex <= 0);
+
+        imgui.SameLine(0.0, state.window.spaceSettingsBtn * 2);
+        imgui.SetCursorPosY(actionRowStartY);
+        local readingActive = (state.values.currentReportName ~= nil and state.values.currentReportName ~= "");
+        disabled = imguiPushDisabled(not readingActive);
         if uiButton("Close") then
             state.values.currentReportName = nil;
             state.values.lastReportReadPath = nil;
@@ -6155,11 +6396,64 @@ function renderSettingsReports()
         end
         imguiPopDisabled(disabled);
 
+        imgui.SameLine(0.0, state.window.spaceSettingsBtn * 2);
+        imgui.SetCursorPosY(actionRowStartY);
+        local sliderStartX = imgui.GetCursorPosX();
+        local sliderDisabled = imguiPushDisabled(not readingActive);
+        imgui.PushItemWidth(state.window.widthReportScale);
+        if imgui.SliderFloat("##reports_font_scale", uiVariables["var_ReportFontScale"], 1.0, 1.5, "%.2f") then
+            local reportScale = tonumber(imgui.GetVarValue(uiVariables["var_ReportFontScale"])) or 1.0;
+            if reportScale < 1.0 then reportScale = 1.0; end
+            if reportScale > 1.5 then reportScale = 1.5; end
+            imgui.SetVarValue(uiVariables["var_ReportFontScale"], reportScale);
+        end
+        imgui.PopItemWidth();
+        imguiPopDisabled(sliderDisabled);
+        local sliderEndX = sliderStartX + (tonumber(state.window.widthReportScale) or 0.0);
+        if imgui.IsItemHovered() then
+            imgui.SetTooltip("Adjust the text size used in the report reader.");
+        end
+
         local selectedCount = 0;
         for _, fileName in ipairs(sortedReports) do
             if selectedReports[fileName] then selectedCount = selectedCount + 1; end
         end
-        setActionBtnPos(3);
+        local deleteW = estimateButtonWidth("Delete", false);
+        local deleteX = actionRowStartX + actionRowAvail - deleteW;
+        if deleteX < actionRowStartX then
+            deleteX = actionRowStartX;
+        end
+        local arrowLabelUp = "/\\";
+        local arrowLabelDown = "\\/";
+        local arrowDirUp = tonumber(_G.ImGuiDir_Up) or 2;
+        local arrowDirDown = tonumber(_G.ImGuiDir_Down) or 3;
+        local arrowW = math.max(estimateButtonWidth(arrowLabelUp, false), estimateButtonWidth(arrowLabelDown, false));
+        local arrowGap = state.window.spaceSettingsBtn or 6.0;
+        local arrowGroupW = (arrowW * 2.0) + arrowGap;
+        local betweenW = deleteX - sliderEndX;
+        local arrowPad = math.max(0.0, (betweenW - arrowGroupW) * 0.5);
+        local arrowStartX = sliderEndX + arrowPad;
+        if arrowStartX + arrowGroupW > deleteX then
+            arrowStartX = math.max(sliderEndX + arrowGap, deleteX - arrowGroupW - arrowGap);
+        end
+        imgui.SetCursorPosX(arrowStartX);
+        imgui.SetCursorPosY(actionRowStartY);
+        if uiArrowButton("##reports_up_arrow", arrowDirUp, arrowLabelUp, { arrowW, calcScaledButtonHeight() }) then
+            state.values.reportsListHeight = minListHeight;
+        end
+        if imgui.IsItemHovered() then
+            imgui.SetTooltip("Maximize the report reader pane.");
+        end
+        imgui.SameLine(0.0, arrowGap);
+        imgui.SetCursorPosY(actionRowStartY);
+        if uiArrowButton("##reports_down_arrow", arrowDirDown, arrowLabelDown, { arrowW, calcScaledButtonHeight() }) then
+            state.values.reportsListHeight = maxListHeight;
+        end
+        if imgui.IsItemHovered() then
+            imgui.SetTooltip("Minimize the report reader pane.");
+        end
+        imgui.SetCursorPosX(deleteX);
+        imgui.SetCursorPosY(actionRowStartY);
         local deleteSelectedDisabled = imguiPushDisabled(selectedCount <= 0);
         if uiButton("Delete") then
             if selectedCount > 0 and getPlayerName() ~= "" then
@@ -6195,7 +6489,15 @@ function renderSettingsReports()
         -- Outer settings footer is now pinned; no internal reserve needed here.
         if imgui.BeginChild("Read Report", { imgui.GetWindowWidth(), 0 }, true) then
             logScaleSnapshot("settings_reports_read", "");
-            imgui.PushTextWrapPos(imgui.GetContentRegionAvail());
+            local reportScale = tonumber(imgui.GetVarValue(uiVariables["var_ReportFontScale"])) or 1.0;
+            if reportScale < 1.0 then reportScale = 1.0; end
+            if reportScale > 1.5 then reportScale = 1.5; end
+            local baseTextScale = tonumber(state.window.textScale) or 1.0;
+            if baseTextScale < 0.25 then baseTextScale = 1.0; end
+            -- Small calibration: report body glyphs render perceptually larger than control text.
+            local calibratedBase = baseTextScale * 0.80;
+            setWindowFontScale(calibratedBase * reportScale);
+            imgui.PushTextWrapPos(getAvailX(imgui.GetContentRegionAvail()));
             local fname = state.values.currentReportName;
             if fname ~= nil then
                 if getPlayerName() ~= "" then
@@ -6220,6 +6522,7 @@ function renderSettingsReports()
             elseif getPlayerName() == "" then
                 imgui.TextColored({ 1, 0.615, 0.615, 1 }, string.format("Unable to manage reports with no character loaded."));
             end
+            setWindowFontScale(baseTextScale);
             imgui.EndChild()
         end
         imgui.PopStyleColor();
@@ -6241,50 +6544,63 @@ function renderSettingsFeedback()
         renderSettingsPageStatusRow();
         local hasTitle = imgui.GetVarValue(uiVariables["var_IssueTitle"]):len() > 0;
         local hasBody = imgui.GetVarValue(uiVariables["var_IssueBody"]):len() > 0;
-        local msg = "I hope you are enjoying Yield!"
-        local widget = imgui.Text
-        local r, g, b, a = 0.77, 0.83, 0.80, 1 -- plain
+        local msg = "I hope you are enjoying Yield!";
+        local widget = imgui.Text;
+        local r, g, b, a = 0.77, 0.83, 0.80, 1; -- plain
         if not hasTitle and state.values.feedbackMissing then
-            msg = "Please enter a title.   "
+            msg = "Please enter a title.";
             widget = imgui.BulletText;
-            r, g, b, a = 1, 0.615, 0.615, 1 -- danger
+            r, g, b, a = 1, 0.615, 0.615, 1; -- danger
         elseif not hasBody and state.values.feedbackMissing then
-            msg = "Please enter some feedback.   "
+            msg = "Please enter some feedback.";
             widget = imgui.BulletText;
-            r, g, b, a = 1, 0.615, 0.615, 1 -- danger
+            r, g, b, a = 1, 0.615, 0.615, 1; -- danger
         end
-        local fontWidth = (msg:len()*imgui.GetFontSize()/2) / 1.75
-        imgui.SetCursorPosX(imgui.GetContentRegionAvail()/2 - fontWidth);
+
+        local availX = getAvailX(imgui.GetContentRegionAvail());
+        local panelWidth = (tonumber(state.window.widthWidgetDefault) or 0.0) + 110.0;
+        local panelMax = math.max(320.0, availX - 20.0);
+        if panelWidth > panelMax then panelWidth = panelMax; end
+        if panelWidth < 260.0 then panelWidth = 260.0; end
+        local panelX = math.max(0.0, (availX - panelWidth) * 0.5);
+        local bodyHeight = math.max(imgui.GetTextLineHeight() * 12.0, imgui.GetWindowHeight() * 0.34);
+
+        local msgSize = imgui.CalcTextSize(msg);
+        local msgWidth = 0.0;
+        if type(msgSize) == "table" then
+            msgWidth = tonumber(msgSize.x or msgSize[1]) or 0.0;
+        else
+            msgWidth = tonumber(msgSize) or 0.0;
+        end
+        imgui.SetCursorPosX(math.max(0.0, (availX - msgWidth) * 0.5));
         imgui.PushStyleColor(ImGuiCol_Text, { r, g, b, a });
         widget(msg);
         imgui.PopStyleColor();
-        imguiFullSep();
-        imgui.PushTextWrapPos(imgui.GetContentRegionAvail());
-        imgui.SetCursorPosX(imgui.GetContentRegionAvail()/16);
-        imgui.Text("If you have discovered a problem or want to provide feedback, this will open a pre-filled GitHub issue.")
-        local widgetWidth = state.window.widthWidgetDefault+75
-        local centerWidget = imgui.GetContentRegionAvail()/2 - widgetWidth/2
-        if settings.general.showToolTips then centerWidget = centerWidget - ( imgui.GetFontSize() * 24 / defaultFontSize ); end
-        imgui.SetCursorPosY(imgui.GetWindowHeight() / 5);
-        imgui.SetCursorPosX(centerWidget);
-        imgui.AlignTextToFramePadding();
-        imgui.PushItemWidth(widgetWidth);
-        if imguiShowToolTip("Enter a title for your feedback/issue submission.", settings.general.showToolTips) then
-            imgui.SameLine(0.0, state.window.spaceToolTip);
-        end
+
+        imgui.Spacing();
+        imgui.SetCursorPosX(panelX);
+        imgui.PushTextWrapPos(panelX + panelWidth);
+        imgui.Text("If you have discovered a problem or want to provide feedback, this will open a pre-filled GitHub issue.");
+        imgui.PopTextWrapPos();
+
+        imgui.Spacing();
+        imgui.SetCursorPosX(panelX);
+        imgui.PushItemWidth(panelWidth);
         imgui.InputText('Title', uiVariables['var_IssueTitle'], 128, bit.bor(ImGuiInputTextFlags_EnterReturnsTrue));
-        imgui.Spacing();
-        imgui.SetCursorPosX(centerWidget);
-        imgui.AlignTextToFramePadding();
-        if imguiShowToolTip("Enter your feedback/issue.", settings.general.showToolTips) then
-            imgui.SameLine(0.0, state.window.spaceToolTip);
+        if settings.general.showToolTips and imgui.IsItemHovered() then
+            imgui.SetTooltip("Enter a title for your feedback/issue submission.");
         end
-        imgui.InputTextMultiline('Body', uiVariables['var_IssueBody'], 16384, state.window.widthWidgetDefault+75, imgui.GetTextLineHeight() * 16, bit.bor(ImGuiInputTextFlags_AllowTabInput, ImGuiInputTextFlags_EnterReturnsTrue));
-        imgui.PopItemWidth();
+
         imgui.Spacing();
-        local widgetPos = state.window.widthWidgetDefault+75
-        local centerWidget = imgui.GetContentRegionAvail()/2 - widgetPos/2
-        imgui.SetCursorPosX(centerWidget);
+        imgui.SetCursorPosX(panelX);
+        imgui.InputTextMultiline('Body', uiVariables['var_IssueBody'], 16384, panelWidth, bodyHeight, bit.bor(ImGuiInputTextFlags_AllowTabInput, ImGuiInputTextFlags_EnterReturnsTrue));
+        if settings.general.showToolTips and imgui.IsItemHovered() then
+            imgui.SetTooltip("Enter your feedback/issue.");
+        end
+        imgui.PopItemWidth();
+
+        imgui.Spacing();
+        imgui.SetCursorPosX(panelX);
         if not state.values.feedbackSubmitted then
             if uiButton("Submit") then
                 if not hasBody or not hasTitle then
@@ -6300,8 +6616,11 @@ function renderSettingsFeedback()
                 end
             end
         end
+        if settings.general.showToolTips and imgui.IsItemHovered() then
+            imgui.SetTooltip("Submitting opens your browser with a pre-filled GitHub issue for the Yield repository.");
+        end
         if state.values.feedbackSubmitted then
-            imgui.SetCursorPosX(centerWidget);
+            imgui.SetCursorPosX(panelX);
             imgui.PushStyleColor(ImGuiCol_Text, { 0.39, 0.96, 0.13, 1 }); -- success
             imgui.Text("Issue draft opened in browser.");
             imgui.PopStyleColor();
@@ -6310,12 +6629,19 @@ function renderSettingsFeedback()
             imgui.Text("<3");
             imgui.PopStyleColor();
         end
-        imgui.PushTextWrapPos(imgui.GetContentRegionAvail());
-        imgui.SetCursorPosY(imgui.GetWindowHeight()-imgui.GetTextLineHeight()*2);
-        if imguiShowToolTip("Submitting opens your browser with a pre-filled GitHub issue for the Yield repository.", settings.general.showToolTips) then
-            imgui.SameLine(0.0, state.window.spaceToolTip);
+
+        local footerY = imgui.GetWindowHeight() - (imgui.GetTextLineHeight() * 2.2);
+        if footerY > imgui.GetCursorPosY() then
+            imgui.SetCursorPosY(footerY);
+        else
+            imgui.Spacing();
         end
+        imgui.SetCursorPosX(panelX);
+        imgui.PushTextWrapPos(panelX + panelWidth);
         imgui.Text("* To: https://github.com/Sjshovan/Ashita-Yield/issues");
+        if settings.general.showToolTips and imgui.IsItemHovered() then
+            imgui.SetTooltip("Submitting opens your browser with a pre-filled GitHub issue for the Yield repository.");
+        end
         imgui.PopTextWrapPos();
         imgui.EndChild();
     end
@@ -6332,32 +6658,116 @@ function renderSettingsAbout()
         setWindowFontScale(state.window.textScale);
         renderSettingsTitleBar("About");
         renderSettingsPageStatusRow();
-        imgui.PushTextWrapPos(imgui.GetContentRegionAvail());
-        imgui.TextColored({ 1, 1, 0.54, 1 }, "Name:"); imgui.Text(string.format("%s by Lotekkie", _addon.name));
         imgui.Spacing();
-        imgui.TextColored({ 1, 1, 0.54, 1 }, "Description:"); imgui.Text(_addon.description); imgui.Text("https://github.com/LoTekkie/Ashita-Yield");
+        local contentStartX = imgui.GetCursorPosX();
+        local availX = getAvailX(imgui.GetContentRegionAvail());
+        local leftPad = 8.0;
+        local panelX = contentStartX + leftPad;
+        local panelWidth = math.max(220.0, availX - leftPad - 4.0);
+        local panelRight = panelX + panelWidth;
+
+        imgui.SetCursorPosX(panelX);
+        imgui.PushStyleColor(ImGuiCol_Text, { 0.77, 0.83, 0.80, 1 });
+        imgui.PushTextWrapPos(panelRight);
+        imgui.Text("Yield is community-driven. Feedback, bug reports, and ideas are always welcome.");
+        imgui.PopTextWrapPos();
+        imgui.PopStyleColor();
         imgui.Spacing();
-        imgui.TextColored({ 1, 1, 0.54, 1 }, "Author:"); imgui.Text(_addon.author);
+
+        imgui.SetCursorPosX(panelX);
+        imgui.PushStyleColor(ImGuiCol.Separator, SETTINGS_HEADER_LINE_COLOR);
+        imgui.Separator();
+        imgui.PopStyleColor();
+        imgui.SetCursorPosX(panelX);
+        imgui.PushStyleColor(ImGuiCol_Text, SETTINGS_HEADER_TEXT_COLOR);
+        imgui.Text("Project");
+        imgui.PopStyleColor();
+        imgui.SetCursorPosX(panelX);
+        imgui.PushStyleColor(ImGuiCol.Separator, SETTINGS_HEADER_LINE_COLOR);
+        imgui.Separator();
+        imgui.PopStyleColor();
         imgui.Spacing();
-        imgui.TextColored({ 1, 1, 0.54, 1 }, "Version:"); imgui.Text(_addon.version);
+
+        imgui.SetCursorPosX(panelX);
+        imgui.TextColored({ 1, 1, 0.54, 1 }, "Name:"); imgui.SameLine(); imgui.Text(string.format("%s by Lotekkie", _addon.name));
+        imgui.SetCursorPosX(panelX);
+        imgui.TextColored({ 1, 1, 0.54, 1 }, "Version:"); imgui.SameLine(); imgui.Text(_addon.version);
+        imgui.SetCursorPosX(panelX);
+        imgui.TextColored({ 1, 1, 0.54, 1 }, "Author:"); imgui.SameLine(); imgui.Text(_addon.author);
+        imgui.SetCursorPosX(panelX);
+        imgui.TextColored({ 1, 1, 0.54, 1 }, "Description:");
+        imgui.SetCursorPosX(panelX);
+        imgui.PushTextWrapPos(panelRight);
+        imgui.Text(_addon.description);
+        imgui.PopTextWrapPos();
+        imgui.SetCursorPosX(panelX);
+        imgui.TextColored({ 1, 1, 0.54, 1 }, "Repository:");
+        imgui.SetCursorPosX(panelX);
+        imgui.PushTextWrapPos(panelRight);
+        imgui.Text("https://github.com/Sjshovan/Ashita-Yield");
+        imgui.PopTextWrapPos();
+
         imgui.Spacing();
-        imgui.TextColored({ 1, 1, 0.54, 1 }, "Support/Donate:"); imgui.Text("https://Paypal.me/Sjshovan\nOR\nFor Gil donations: I play on Wings private server! (https://www.wingsxi.com/wings/) My in-game name is LoTekkie.");
+        imgui.SetCursorPosX(panelX);
+        imgui.PushStyleColor(ImGuiCol.Separator, SETTINGS_HEADER_LINE_COLOR);
+        imgui.Separator();
+        imgui.PopStyleColor();
+        imgui.SetCursorPosX(panelX);
+        imgui.PushStyleColor(ImGuiCol_Text, SETTINGS_HEADER_TEXT_COLOR);
+        imgui.Text("Community");
+        imgui.PopStyleColor();
+        imgui.SetCursorPosX(panelX);
+        imgui.PushStyleColor(ImGuiCol.Separator, SETTINGS_HEADER_LINE_COLOR);
+        imgui.Separator();
+        imgui.PopStyleColor();
         imgui.Spacing();
-        imgui.PushStyleColor(ImGuiCol.Button, { 0.21, 0.47, 0.59, 1 }); -- info
-        if uiButton("Go to Paypal") then
+
+        imgui.SetCursorPosX(panelX);
+        imgui.PushTextWrapPos(panelRight);
+        imgui.Text("Use these links to share ideas, report issues, and support the project.");
+        imgui.PopTextWrapPos();
+        imgui.Spacing();
+
+        local btnGap = 8.0;
+        local btnIssuesW = estimateButtonWidthForButtons("Open Issues", false);
+        local btnRepoW = estimateButtonWidthForButtons("Open Repo", false);
+        local btnDiscordW = estimateButtonWidthForButtons("Open Discord", false);
+        local actionRowW = btnIssuesW + btnRepoW + btnDiscordW + (btnGap * 2.0);
+        local compactActions = actionRowW > panelWidth;
+        imgui.SetCursorPosX(panelX);
+        if uiButton("Open Issues") then
+            ashita.misc.open_url("https://github.com/Sjshovan/Ashita-Yield/issues");
+        end
+        if not compactActions then imgui.SameLine(0.0, btnGap); else imgui.SetCursorPosX(panelX); end
+        if uiButton("Open Repo") then
+            ashita.misc.open_url("https://github.com/Sjshovan/Ashita-Yield");
+        end
+        if not compactActions then imgui.SameLine(0.0, btnGap); else imgui.SetCursorPosX(panelX); end
+        if uiButton("Open Discord") then
+            ashita.misc.open_url("https://discord.gg/3FbepVGh");
+        end
+
+        imgui.Spacing();
+        imgui.SetCursorPosX(panelX);
+        if uiButton("Support Development") then
             ashita.misc.open_url("https://Paypal.me/Sjshovan");
         end
+
+        imguiFullSep();
+        imgui.SetCursorPosX(panelX);
+        imgui.PushStyleColor(ImGuiCol_Text, SETTINGS_HEADER_TEXT_COLOR);
+        imgui.Text("Special Thanks");
         imgui.PopStyleColor();
-        imguiFullSep();
-        imgui.TextColored({ 1, 1, 0.54, 1 }, "Special Thanks:");
-        imguiFullSep();
-        imgui.Text("To Hughesyourdaddy (https://www.omega-ffxi.com): For granting me the freedom to create this within the FFXI Omega private server.");
+        imgui.SetCursorPosX(panelX);
+        imgui.PushStyleColor(ImGuiCol.Separator, SETTINGS_HEADER_LINE_COLOR);
+        imgui.Separator();
+        imgui.PopStyleColor();
         imgui.Spacing();
-        imgui.Text("To the Ashita team (https://www.ashitaxi.com/): For making this possible.");
-        imgui.Spacing();
-        imgui.Text("To Ashita Discord members (https://discord.gg/3FbepVGh): For their feedback and knowledge.");
-        imgui.Spacing();
-        imgui.Text("To everyone who reported bugs and submitted feedback, thanks for helping make Yield great!");
+
+        imgui.SetCursorPosX(panelX);
+        imgui.PushTextWrapPos(panelRight);
+        imgui.Text("Thanks to the Ashita team, community testers, and everyone who reported bugs and shared feedback.");
+        imgui.PopTextWrapPos();
         imgui.EndChild();
     end
     imgui.PopStyleVar();
@@ -6450,8 +6860,8 @@ function renderHelpQsAndAs()
         imgui.TextColored({ 1, 1, 0.54, 1 }, "Q: I cannot find the Yield window! What do I do?"); imgui.Separator();
         imgui.Text("A: Type /yield find or /yld f in your chat bar. This will force the Yield window to return to the top left of your screen.");
         imguiFullSep();
-        imgui.TextColored({ 1, 1, 0.54, 1 }, "Q: Which server do you play on?"); imgui.Separator();
-        imgui.Text("A: I am currently playing on Wings private server (https://www.wingsxi.com/). My in-game name is LoTekkie. Hope to see you around!");
+        imgui.TextColored({ 1, 1, 0.54, 1 }, "Q: Where can I share ideas or follow updates?"); imgui.Separator();
+        imgui.Text("A: Use Settings -> Feedback to send ideas and bug reports, or visit the project issues page at https://github.com/Sjshovan/Ashita-Yield/issues.");
         imguiFullSep();
         imgui.TextColored({ 1, 1, 0.54, 1 }, "Q: Have you created any other FFXI addons?"); imgui.Separator();
         imgui.Text("A: Yes, I have also authored Mount Muzzle(Windower+Ashita) and Battle Stations(Windower). You can obtain these through their respective launchers.");
