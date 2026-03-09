@@ -518,7 +518,7 @@ local uiVariables =
     ["var_WindowScale"]           = { 1.0 },
     ["var_WindowScalePct"]        = { 100 },
     ["var_ShowDetailedYields"]    = { true },
-    ["var_YieldDetailsColor"]     = { {1.0, 1.0, 1.0, 1.0} },
+    ["var_YieldDetailsColor"]     = { 1.0, 1.0, 1.0, 1.0 },
     ["var_UseImageButtons"]       = { true },
     ["var_EnableSoundAlerts"]     = { true },
     ["var_TargetSoundFile"]       = { '' },
@@ -546,7 +546,7 @@ local uiVariables =
     ['var_SettingsVisible']        = { false },
     ["var_HelpVisible"]            = { false },
     ['var_AllSoundIndex']          = { 0 },
-    ['var_AllColors']              = { {1.0, 1.0, 1.0, 1.0} },
+    ['var_AllColors']              = { 1.0, 1.0, 1.0, 1.0 },
     ["var_TargetSoundIndex"]       = { 0 },
     ["var_FishingSkillSoundIndex"] = { 0 },
     ["var_ClamBreakSoundIndex"]    = { 0 },
@@ -672,6 +672,17 @@ local function sanitizeColorSettings()
     if settings.general.yieldDetailsColor == nil then
         settings.general.yieldDetailsColor = defaultYieldColor;
         writeDebugLog('sanitizeColorSettings: fixed general yieldDetailsColor');
+    elseif tonumber(settings.general.yieldDetailsColor) == 0 then
+        -- Recover from corrupted transparent-black sentinel values persisted by older color-edit flow.
+        settings.general.yieldDetailsColor = defaultYieldColor;
+        writeDebugLog('sanitizeColorSettings: recovered general yieldDetailsColor from 0');
+    else
+        -- Keep the details text color opaque for readability and stable persistence.
+        local cr, cg, cb, ca = colorToRGBA(settings.general.yieldDetailsColor);
+        if ca == nil or ca <= 0 then
+            settings.general.yieldDetailsColor = colorTableToInt({ (cr or 255) / 255, (cg or 255) / 255, (cb or 255) / 255, 1.0 });
+            writeDebugLog('sanitizeColorSettings: forced general yieldDetailsColor alpha to 255');
+        end
     end
     if settings.yields == nil then
         return;
@@ -997,6 +1008,9 @@ end
 
 local estimateButtonWidth;
 local uiActionButton;
+local uiSmallButton;
+local uiSmallButtonBoosted;
+local uiSmallButtonCompact;
 local ACTION_BTN_BOOST = 1.00;
 local SETTINGS_HEADER_TEXT_COLOR = { 1.0, 1.0, 0.54, 1.0 }; -- warn yellow
 local SETTINGS_HEADER_LINE_COLOR = { 0.24, 0.25, 0.27, 1.0 }; -- neutral gray
@@ -1095,13 +1109,7 @@ local function renderSettingsTitleBar(title, gatherSelected, onGatherSelect, gat
     local headerScale = (state and state.window and state.window.textScale) or 1.0;
     local padX = 4.0 * ((state and state.window and tonumber(state.window.buttonSizeXScale)) or 1.0);
     local padY = 3.0 * ((state and state.window and tonumber(state.window.buttonSizeYScale)) or 1.0);
-    local menuPadY = padY;
-    if gatherSelected ~= nil and type(onGatherSelect) == "function" then
-        -- Slightly taller colored row for gather-button pages so boosted controls are not clipped.
-        local scale = (state and state.window and tonumber(state.window.scale)) or 1.0;
-        menuPadY = menuPadY + math.max(1.0, scale * 0.75);
-    end
-    imgui.PushStyleVar(ImGuiStyleVar.FramePadding, { padX, menuPadY });
+    imgui.PushStyleVar(ImGuiStyleVar.FramePadding, { padX, padY });
     if not imgui.BeginMenuBar() then
         imgui.PopStyleVar();
         return;
@@ -1187,11 +1195,14 @@ local function renderSettingsTitleBar(title, gatherSelected, onGatherSelect, gat
 
     imgui.SetCursorPosX(blockX);
     imgui.SetCursorPosY(rowY);
+    imgui.AlignTextToFramePadding();
     if statusText ~= nil then
         imgui.TextColored(statusColor, statusText);
         imgui.SameLine(0.0, 0.0);
+        imgui.AlignTextToFramePadding();
         imgui.TextColored(SETTINGS_HEADER_TEXT_COLOR, sepText);
         imgui.SameLine(0.0, 0.0);
+        imgui.AlignTextToFramePadding();
     end
     imgui.TextColored(SETTINGS_HEADER_TEXT_COLOR, titleText);
 
@@ -1202,6 +1213,14 @@ end
 
 local function renderSettingsPageStatusRow()
     -- Status now renders inline in renderSettingsTitleBar as "Status | Page".
+end
+
+local function pushSettingsPageMenuBarSizing()
+    local padX = 4.0 * ((state and state.window and tonumber(state.window.buttonSizeXScale)) or 1.0);
+    local padY = 3.0 * ((state and state.window and tonumber(state.window.buttonSizeYScale)) or 1.0);
+    local scale = (state and state.window and tonumber(state.window.scale)) or 1.0;
+    local extraY = math.max(1.5, scale * 1.10);
+    imgui.PushStyleVar(ImGuiStyleVar.FramePadding, { padX, padY + extraY });
 end
 
 uiActionButton = function(label)
@@ -1232,7 +1251,7 @@ uiActionButton = function(label)
     return uiButton(label, { w, h });
 end
 
-local function uiSmallButton(...)
+uiSmallButton = function(...)
     local padX = 3.0;
     local padY = 2.0;
     if state and state.window then
@@ -1245,7 +1264,7 @@ local function uiSmallButton(...)
     return pressed;
 end
 
-local function uiSmallButtonBoosted(label, boost)
+uiSmallButtonBoosted = function(label, boost)
     local b = tonumber(boost) or 1.0;
     if b < 0.50 then b = 0.50; end
     local padX = 3.0;
@@ -1260,7 +1279,7 @@ local function uiSmallButtonBoosted(label, boost)
     return pressed;
 end
 
-local function uiSmallButtonCompact(label)
+uiSmallButtonCompact = function(label)
     return uiSmallButton(label);
 end
 
@@ -1488,11 +1507,45 @@ local function syncGatherYieldColorVars(gathering)
     end
     for yieldName, data in pairs(settings.yields[gathering]) do
         local varName = string.format("var_%s_%s_color", gathering, yieldName);
-        uiVariables[varName] = uiVariables[varName] or { {1.0, 1.0, 1.0, 1.0} };
+        uiVariables[varName] = uiVariables[varName] or { 1.0, 1.0, 1.0, 1.0 };
         local r, g, b, a = colorToRGBA(data.color or getDefaultYieldColorInt());
         if a == nil or a <= 0 then a = 255; end
         imgui.SetVarValue(uiVariables[varName], r / 255, g / 255, b / 255, a / 255);
     end
+end
+
+local function getGatherBulkColorRgba(gathering)
+    if settings == nil or settings.yields == nil or settings.yields[gathering] == nil then
+        return getDefaultYieldColorRgba();
+    end
+
+    local sortedYields = table.sortKeysByAlphabet(settings.yields[gathering], true);
+    if sortedYields == nil or #sortedYields <= 0 then
+        return getDefaultYieldColorRgba();
+    end
+
+    local firstYield = sortedYields[1];
+    local data = settings.yields[gathering][firstYield];
+    local colorInt = (data and data.color) or getDefaultYieldColorInt();
+    local r, g, b, a = colorToRGBA(colorInt);
+    if a == nil or a <= 0 then
+        a = 255;
+    end
+    return (r or 255) / 255, (g or 255) / 255, (b or 255) / 255, a / 255;
+end
+
+local function syncAllColorsVarForGather(gathering, reason)
+    if gathering == nil or uiVariables["var_AllColors"] == nil then
+        return;
+    end
+
+    local r, g, b, a = getGatherBulkColorRgba(gathering);
+    imgui.SetVarValue(uiVariables["var_AllColors"], r, g, b, a);
+    writeDebugLog(string.format(
+        'setColors bulk sync gather=%s reason=%s rgba=(%.3f,%.3f,%.3f,%.3f)',
+        tostring(gathering), tostring(reason or "unknown"),
+        tonumber(r) or 0.0, tonumber(g) or 0.0, tonumber(b) or 0.0, tonumber(a) or 0.0
+    ));
 end
 
 local function fitWindowRect(baseWidth, baseHeight, maxWidth, maxHeight, fitPct)
@@ -1561,10 +1614,18 @@ function imgui.SetVarValue(var, ...)
     if #args == 1 then
         var[1] = args[1];
     elseif #args == 4 then
-        -- Color array
-        var[1] = {args[1], args[2], args[3], args[4]};
+        -- Color array (flat rgba tuple for ColorEdit4 compatibility)
+        var[1] = args[1];
+        var[2] = args[2];
+        var[3] = args[3];
+        var[4] = args[4];
+    elseif #args == 3 then
+        -- Triple values (single/stack/npc prices)
+        var[1] = args[1];
+        var[2] = args[2];
+        var[3] = args[3];
     elseif #args == 2 then
-        -- Two values (for prices)
+        -- Two values
         var[1] = args[1];
         var[2] = args[2];
     end
@@ -1577,6 +1638,10 @@ function imgui.GetVarValue(var)
     end
     if type(var[1]) == 'table' then
         return var[1][1], var[1][2], var[1][3], var[1][4];
+    elseif var[4] ~= nil then
+        return var[1], var[2], var[3], var[4];
+    elseif var[3] ~= nil then
+        return var[1], var[2], var[3];
     elseif var[2] ~= nil then
         return var[1], var[2];
     else
@@ -1611,9 +1676,14 @@ function loadUiVariables()
 
     local r, g, b, a = colorToRGBA(settings.general.yieldDetailsColor);
     imgui.SetVarValue(uiVariables["var_YieldDetailsColor"], r/255, g/255, b/255, a/255);
+    local vr, vg, vb, va = imgui.GetVarValue(uiVariables["var_YieldDetailsColor"]);
+    writeDebugLog(string.format('loadUiVariables general_color int=%s rgba=(%s,%s,%s,%s) var=(%s,%s,%s,%s)',
+        tostring(settings.general.yieldDetailsColor), tostring(r), tostring(g), tostring(b), tostring(a),
+        tostring(vr), tostring(vg), tostring(vb), tostring(va)));
 
     for gathering, yields in pairs(settings.yields) do -- per yield
         local loadedCount = 0;
+        local sampleLogged = false;
         for yield, data in pairs(yields) do
             local priceVar = string.format("var_%s_%s_prices", gathering, yield);
             local colorVar = string.format("var_%s_%s_color", gathering, yield);
@@ -1622,7 +1692,7 @@ function loadUiVariables()
 
             -- Create variables if they don't exist
             if not uiVariables[priceVar] then uiVariables[priceVar] = { 0, 0, 0 }; end
-            if not uiVariables[colorVar] then uiVariables[colorVar] = { {1.0, 1.0, 1.0, 1.0} }; end
+            if not uiVariables[colorVar] then uiVariables[colorVar] = { 1.0, 1.0, 1.0, 1.0 }; end
             if not uiVariables[soundIndexVar] then uiVariables[soundIndexVar] = { 0 }; end
             if not uiVariables[soundFileVar] then uiVariables[soundFileVar] = { '' }; end
 
@@ -1634,6 +1704,14 @@ function loadUiVariables()
             imgui.SetVarValue(uiVariables[priceVar], data.singlePrice, data.stackPrice, npcPrice);
             local r, g, b, a = colorToRGBA(data.color);
             imgui.SetVarValue(uiVariables[colorVar], r/255, g/255, b/255, a/255);
+            if not sampleLogged then
+                local cr, cg, cb, ca = imgui.GetVarValue(uiVariables[colorVar]);
+                writeDebugLog(string.format('loadUiVariables color_sample gather=%s item=%s int=%s rgba=(%s,%s,%s,%s) var=(%s,%s,%s,%s)',
+                    tostring(gathering), tostring(yield), tostring(data.color),
+                    tostring(r), tostring(g), tostring(b), tostring(a),
+                    tostring(cr), tostring(cg), tostring(cb), tostring(ca)));
+                sampleLogged = true;
+            end
             loadedCount = loadedCount + 1;
             -- re-index for file changes
             local soundIndex = getSoundIndex(data.soundFile);
@@ -1671,8 +1749,7 @@ function loadUiVariables()
     imgui.SetVarValue(uiVariables["var_ClamBreakSoundFile"], soundFile);
 
     -- All colors
-    local r, g, b, a = getDefaultYieldColorRgba();
-    imgui.SetVarValue(uiVariables["var_AllColors"], r, g, b, a);
+    syncAllColorsVarForGather(state.settings.setColors.gathering or state.gathering, "loadUiVariables");
 
     for gathering, defs in pairs(eventAlertDefs) do
         for _, def in ipairs(defs) do
@@ -1760,14 +1837,57 @@ function getPrice(itemName, gatherType)
     end
 
     local price = 0;
-    if singlePrice > 0 then
+    -- Priority: stack -> single -> npc -> 0.
+    if stackPrice > 0 then
+        if stackSize > 0 then
+            price = stackPrice / stackSize;
+        else
+            -- Fallback when stack size metadata is missing/invalid.
+            price = stackPrice;
+        end
+    elseif singlePrice > 0 then
         price = singlePrice;
-    elseif stackPrice > 0 and stackSize > 0 then
-        price = stackPrice / stackSize;
-    else
+    elseif npcPrice > 0 then
         price = npcPrice;
+    else
+        price = 0;
     end
     return math.floor(tonumber(price) or 0);
+end
+
+local function recalculateEstimatedValueForGathering(gathering)
+    local gatherName = tostring(gathering or "");
+    if gatherName == "" then
+        writeDebugLog('recalculate_estimated skipped: missing gathering');
+        return false, 0, 0;
+    end
+
+    local gatherMetrics = metrics[gatherName];
+    if gatherMetrics == nil then
+        writeDebugLog(string.format('recalculate_estimated skipped: missing metrics for %s', gatherName));
+        return false, 0, 0;
+    end
+
+    gatherMetrics.yields = gatherMetrics.yields or {};
+    local trackedRows = 0;
+    local estimatedValue = 0;
+    for yieldName, count in pairs(gatherMetrics.yields) do
+        local qty = tonumber(count) or 0;
+        if qty > 0 then
+            trackedRows = trackedRows + 1;
+            estimatedValue = estimatedValue + (getPrice(yieldName, gatherName) * qty);
+        end
+    end
+
+    gatherMetrics.estimatedValue = math.max(0, math.floor(tonumber(estimatedValue) or 0));
+    local estVarName = string.format("var_%s_estimatedValue", gatherName);
+    if uiVariables[estVarName] ~= nil then
+        imgui.SetVarValue(uiVariables[estVarName], gatherMetrics.estimatedValue);
+    end
+
+    writeDebugLog(string.format('recalculate_estimated gather=%s tracked=%d value=%d',
+        gatherName, tonumber(trackedRows) or 0, tonumber(gatherMetrics.estimatedValue) or 0));
+    return true, trackedRows, gatherMetrics.estimatedValue;
 end
 
 local function getSortedYieldNames(gathering)
@@ -2585,6 +2705,16 @@ function getColorVarTable(var, context)
     return {1.0, 1.0, 1.0, 1.0};
 end
 
+local function getOpaqueYieldDetailsColorFromVar(context)
+    local color = getColorVarTable(uiVariables["var_YieldDetailsColor"], context or "var_YieldDetailsColor");
+    local r = tonumber(color[1]) or 1.0;
+    local g = tonumber(color[2]) or 1.0;
+    local b = tonumber(color[3]) or 1.0;
+
+    imgui.SetVarValue(uiVariables["var_YieldDetailsColor"], r, g, b, 1.0);
+    return colorTableToInt({ r, g, b, 1.0 }), r, g, b;
+end
+
 ----------------------------------------------------------------------------------------------------
 -- func: getPlayerName
 -- desc: Obtain the current players name.
@@ -2807,7 +2937,7 @@ function saveSettings()
     settings.general.targetValue           = imgui.GetVarValue(uiVariables["var_TargetValue"]);
     settings.general.showToolTips          = imgui.GetVarValue(uiVariables["var_ShowToolTips"]);
     syncWindowScaleSettings(imgui.GetVarValue(uiVariables["var_WindowScale"]));
-    settings.general.yieldDetailsColor     = colorTableToInt(getColorVarTable(uiVariables["var_YieldDetailsColor"], "var_YieldDetailsColor"));
+    settings.general.yieldDetailsColor     = getOpaqueYieldDetailsColorFromVar("saveSettings.var_YieldDetailsColor");
     settings.general.useImageButtons       = imgui.GetVarValue(uiVariables["var_UseImageButtons"]);
     settings.general.enableSoundAlerts     = imgui.GetVarValue(uiVariables["var_EnableSoundAlerts"]);
     settings.general.targetSoundFile       = imgui.GetVarValue(uiVariables["var_TargetSoundFile"]);
@@ -2987,7 +3117,7 @@ ashita.events.register('load', 'yield_load', function()
     for gathering, yields in pairs(settings.yields) do
         for yield, data in pairs(yields) do -- per yield
             uiVariables[string.format("var_%s_%s_prices", gathering, yield)] = { 0, 0, 0 };
-            uiVariables[string.format("var_%s_%s_color", gathering, yield)] = { {1.0, 1.0, 1.0, 1.0} };
+            uiVariables[string.format("var_%s_%s_color", gathering, yield)] = { 1.0, 1.0, 1.0, 1.0 };
             uiVariables[string.format("var_%s_%s_soundFile", gathering, yield)] = { '' };
             uiVariables[string.format("var_%s_%s_soundIndex", gathering, yield)] = { 0 };
         end
@@ -3479,8 +3609,7 @@ local SettingsWindow =
         imgui.CloseCurrentPopup();
         imgui.SetVarValue(uiVariables["var_SettingsVisible"], false);
         imgui.SetVarValue(uiVariables["var_AllSoundIndex"], 0);
-        local r, g, b, a = getDefaultYieldColorRgba();
-        imgui.SetVarValue(uiVariables["var_AllColors"], r, g, b, a);
+        syncAllColorsVarForGather(state.settings.setColors.gathering or state.gathering, "modalSaveAction");
         checkTargetAlertReady();
         state.values.feedbackSubmitted = false;
         state.values.feedbackMissing = false;
@@ -3574,19 +3703,17 @@ local SettingsWindow =
         -- /SETTINGS_MENU
 
         local activePage = tonumber(state.settings.activeIndex) or 1;
-        local yieldsExist = table.count(metrics[state.settings.setPrices.gathering].yields) > 0;
-        local showRecalculate = (activePage == 2 and yieldsExist);
+        local showFooterRecalculate = (activePage == 2);
         logScaleSnapshot("settings", string.format("page=%s", tostring(activePage)));
 
         -- Use a body child to keep the footer pinned like the primary window.
         local footerButtonHeight, footerSymPad, footerBottomPadTarget, footerReserve = calcFooterMetrics();
         local settingsFooterReserve = math.ceil(tonumber(footerReserve) or 0.0);
-        local recalcReserve = showRecalculate and imgui.GetFrameHeightWithSpacing() or 0.0;
 
         if imgui.BeginChild("SettingsBodyHost", { -1, -settingsFooterReserve }, false, bit.bor(ImGuiWindowFlags.NoScrollbar, ImGuiWindowFlags.NoScrollWithMouse)) then
             local bodyFallbackY = math.max(0.0, (tonumber(imgui.GetWindowHeight()) or 0.0) - (tonumber(imgui.GetCursorPosY()) or 0.0) - (tonumber(state.window.padY) or 0.0));
             local _, bodyAvailY = getAvailXY(imgui.GetContentRegionAvail(), bodyFallbackY);
-            state.window.heightSettingsContent = math.max((state.window.scale or 1.0) * 120.0, bodyAvailY - recalcReserve);
+            state.window.heightSettingsContent = math.max((state.window.scale or 1.0) * 120.0, bodyAvailY);
             state.window.heightSettingsScroll = math.max((state.window.scale or 1.0) * 90.0, state.window.heightSettingsContent - (imgui.GetFrameHeightWithSpacing() * 1.2));
 
             -- render settings pages..
@@ -3601,44 +3728,6 @@ local SettingsWindow =
                 [7] = function() renderSettingsAbout() end,
             })
             imgui.EndGroup();
-
-            -- Purpose: let users recompute estimated value immediately after price edits.
-            if showRecalculate then
-                imgui.Spacing();
-                local rowX = imgui.GetCursorPosX();
-                local rowY = imgui.GetCursorPosY();
-                local rowAvailX = select(1, getAvailXY(imgui.GetContentRegionAvail(), 0.0));
-                local btnLabel = "Recalculate Value";
-                local btnW = estimateButtonWidth(btnLabel, true);
-                if btnW == nil or btnW <= 0 then
-                    btnW = estimateHeaderActionWidth(btnLabel);
-                end
-                local btnX = rowX + (tonumber(rowAvailX) or 0.0) - (tonumber(btnW) or 0.0);
-                if btnX < rowX then btnX = rowX; end
-
-                imgui.SetCursorPosX(rowX);
-                imgui.SetCursorPosY(rowY);
-                imgui.AlignTextToFramePadding();
-                imgui.TextColored(SETTINGS_HEADER_TEXT_COLOR, "Recalculate");
-
-                imgui.SetCursorPosX(btnX);
-                imgui.SetCursorPosY(rowY);
-                if uiButtonCompact(btnLabel) then
-                    updateAllStates(state.settings.setPrices.gathering);
-                    metrics[state.gathering].estimatedValue = 0;
-                    for yield, count in pairs(metrics[state.gathering].yields) do
-                        local price = getPrice(yield);
-                        metrics[state.gathering].estimatedValue = metrics[state.gathering].estimatedValue + (price * count);
-                    end
-                    imgui.SetVarValue(uiVariables[string.format("var_%s_estimatedValue", state.gathering)], metrics[state.gathering].estimatedValue);
-                end
-                if settings.general.showToolTips and imgui.IsItemHovered() then
-                    imgui.SetTooltip("Recalculate the estimated value with your current price settings.");
-                end
-
-                local rowH = imgui.GetFrameHeightWithSpacing();
-                imgui.SetCursorPosY(rowY + rowH);
-            end
         end
         -- Remove only the body->footer vertical item gap; keep footer geometry math unchanged.
         local itemGapX = (state.window.ui and state.window.ui.space and tonumber(state.window.ui.space.sm)) or 0.0;
@@ -3669,11 +3758,22 @@ local SettingsWindow =
             local function footerButton(label, width)
                 return uiButton(label, { tonumber(width) or footerBtnWidth(label), footerButtonHeight });
             end
+            local rightPrimaryW = 0.0;
+            local rightSecondaryLabel = nil;
+            local rightSecondaryW = 0.0;
+            if showFooterRecalculate and pageActionLabel == "Use Defaults" then
+                rightSecondaryLabel = "Recalculate Value";
+                rightSecondaryW = footerBtnWidth(rightSecondaryLabel);
+            end
             local rightWLog = 0.0;
             local rightXLog = 0.0;
             local rightInsetLog = -1.0;
             if pageActionLabel ~= nil then
-                rightWLog = footerBtnWidth(pageActionLabel);
+                rightPrimaryW = footerBtnWidth(pageActionLabel);
+                rightWLog = rightPrimaryW;
+                if rightSecondaryLabel ~= nil then
+                    rightWLog = rightWLog + footerSpacing + rightSecondaryW;
+                end
                 rightXLog = footerStartX + footerAvailX - rightWLog - rightInsetLog;
                 if rightXLog < footerStartX then rightXLog = footerStartX; end
                 -- Pixel-snap to avoid fractional-x rendering drift at some scales.
@@ -3735,7 +3835,34 @@ local SettingsWindow =
             end
 
             if pageActionLabel == "Use Defaults" then
-                local defaultsPressed = footerButton("Use Defaults", rightWLog);
+                if rightSecondaryLabel ~= nil then
+                    local recalcPressed = footerButton(rightSecondaryLabel, rightSecondaryW);
+                    logFooterItemRect("settings_right", "Recalculate Value", footerRowY, settingsFooterReserve);
+                    if recalcPressed then
+                        local gatherForRecalc = state.settings.setPrices.gathering;
+                        openConfirmModal(
+                            string.format("recalculate %s estimated value", string.upperfirst(tostring(gatherForRecalc))),
+                            "This recomputes Estimated Value from tracked yields using the current Set Prices values.",
+                            false,
+                            function()
+                                local ok, trackedRows, value = recalculateEstimatedValueForGathering(gatherForRecalc);
+                                if ok then
+                                    setSettingsStatus(string.format("Recalculated %s: %d (from %d tracked yields).",
+                                        string.upperfirst(tostring(gatherForRecalc)), tonumber(value) or 0, tonumber(trackedRows) or 0),
+                                        { 0.39, 0.96, 0.13, 1.0 }, 2.5);
+                                else
+                                    setSettingsStatus("Failed to recalculate estimated value.", { 1.0, 0.615, 0.615, 1.0 }, 3.0);
+                                end
+                            end
+                        );
+                    end
+                    if settings.general.showToolTips and imgui.IsItemHovered() then
+                        imgui.SetTooltip("Recalculate this gathering type's Estimated Value from current prices.");
+                    end
+                    imgui.SameLine(0.0, footerSpacing);
+                end
+
+                local defaultsPressed = footerButton("Use Defaults", rightPrimaryW);
                 logFooterItemRect("settings_right", "Use Defaults", footerRowY, settingsFooterReserve);
                 if defaultsPressed then
                     if activePage == 1 then
@@ -4258,8 +4385,7 @@ ashita.events.register('d3d_present', 'yield_render', function()
             imgui.SetVarValue(uiVariables['var_ReportSelected'], 0);
             state.values.currentReportName = nil;
             state.settings.setColors.gathering = data.name;
-            local r, g, b, a = getDefaultYieldColorRgba();
-            imgui.SetVarValue(uiVariables["var_AllColors"], r, g, b, a);
+            syncAllColorsVarForGather(data.name, "main_gather_switch");
             state.settings.setAlerts.gathering = data.name;
             imgui.SetVarValue(uiVariables["var_AllSoundIndex"], 0);
         end);
@@ -5116,6 +5242,9 @@ ashita.events.register('d3d_present', 'yield_render', function()
     -- SETTINGS
     if imgui.GetVarValue(uiVariables["var_SettingsVisible"]) then
         if not state.values.settingsWindowOpen then
+            -- Re-sync UI vars from persisted settings whenever Settings opens.
+            -- This keeps all color pickers aligned with saved values after reloads.
+            loadUiVariables();
             commitSettingsSnapshot();
             state.values.settingsJustOpened = true;
             state.values.settingsStatusText = "";
@@ -5128,7 +5257,20 @@ ashita.events.register('d3d_present', 'yield_render', function()
         state.values.settingsWindowOpen = false;
         state.values.settingsJustOpened = false;
         if type(state.values.settingsSnapshot) == 'table' then
-            SettingsWindow:modalCancelAction(true);
+            local dirtyOnClose = hasPendingSettingsChanges();
+            if dirtyOnClose then
+                local ok = trySaveSettings('settings_window_close', true);
+                writeDebugLog(string.format('settings window close auto-save ok=%s', tostring(ok)));
+                if ok then
+                    commitSettingsSnapshot();
+                else
+                    -- Preserve previous behavior on save failure: restore last snapshot.
+                    SettingsWindow:modalCancelAction(true);
+                end
+            else
+                state.values.settingsSnapshot = nil;
+                state.values.settingsUiSnapshotFingerprint = nil;
+            end
         else
             state.values.settingsUiSnapshotFingerprint = nil;
         end
@@ -5151,6 +5293,7 @@ end);
 -- desc: Renders the General settings.
 ----------------------------------------------------------------------------------------------------
 function renderSettingsGeneral()
+    pushSettingsPageMenuBarSizing();
     if imgui.BeginChild("General", { -1, state.window.heightSettingsContent }, imgui.GetVarValue(uiVariables['var_WindowVisible']), bit.bor(ImGuiWindowFlags.MenuBar, ImGuiWindowFlags.NoResize)) then
         setWindowFontScale(state.window.textScale);
         imgui.PushItemWidth(state.window.widthWidgetDefault);
@@ -5243,12 +5386,10 @@ function renderSettingsGeneral()
         if imguiShowToolTip("Set the color of the math breakdown in the scrollable yields list.", settings.general.showToolTips) then
             imgui.SameLine(0.0, state.window.spaceToolTip);
         end
-        local r, g, b, a = colorToRGBA(settings.general.yieldDetailsColor);
-
         if imgui.ColorEdit4("Yield Details Color", uiVariables["var_YieldDetailsColor"]) then
-            settings.general.yieldDetailsColor = colorTableToInt(getColorVarTable(uiVariables["var_YieldDetailsColor"], "var_YieldDetailsColor"));
-            writeDebugLog('general yieldDetailsColor changed');
-            queueColorSave('yield_details_color');
+            local converted, cr, cg, cb = getOpaqueYieldDetailsColorFromVar("general.yieldDetailsColor");
+            settings.general.yieldDetailsColor = converted;
+            writeDebugLog(string.format('general yieldDetailsColor changed rgb=(%.3f,%.3f,%.3f)', tonumber(cr) or 0.0, tonumber(cg) or 0.0, tonumber(cb) or 0.0));
         end
         -- /Yield Details Color
 
@@ -5314,6 +5455,7 @@ function renderSettingsGeneral()
 
         imgui.EndChild()
     end
+    imgui.PopStyleVar();
 end
 
 ----------------------------------------------------------------------------------------------------
@@ -5323,6 +5465,7 @@ end
 function renderSettingsSetPrices()
     local gathering = state.settings.setPrices.gathering
 
+    pushSettingsPageMenuBarSizing();
     if imgui.BeginChild("Set Prices", { -1, state.window.heightSettingsContent }, imgui.GetVarValue(uiVariables['var_WindowVisible']), bit.bor(ImGuiWindowFlags.MenuBar, ImGuiWindowFlags.NoResize)) then
         logScaleSnapshot("settings_prices_begin", "");
         local gatherBtnBoost = 1.18;
@@ -5370,7 +5513,7 @@ function renderSettingsSetPrices()
                 local data = settings.yields[gathering][yield];
                  if data.id ~= nil then
                     imgui.AlignTextToFramePadding();
-                    if imguiShowToolTip(string.format("Set single, stack, and npc prices for %s. Value uses priority: single, then stack/stackSize, then npc.", yield), settings.general.showToolTips) then
+                    if imguiShowToolTip(string.format("Set single, stack, and npc prices for %s. Value uses priority: stack/stackSize, then single, then npc.", yield), settings.general.showToolTips) then
                         imgui.SameLine(0.0, state.window.spaceToolTip);
                     end
                     local adjItemName = data.short or yield;
@@ -5393,7 +5536,7 @@ function renderSettingsSetPrices()
                         npcPrice = npcPrice ~= nil and tonumber(npcPrice) or storedNpc;
                         imgui.SetVarValue(priceVar, singlePrice, stackPrice, npcPrice);
                     end
-                    imgui.PushID(adjItemName);
+                    imgui.PushID(string.format("%s::%s", tostring(gathering), tostring(yield)));
                     local totalW = state.window.widthWidgetDefault;
                     local colGap = 4.0;
                     local stVar = { stackPrice or 0 };
@@ -5401,11 +5544,11 @@ function renderSettingsSetPrices()
                     local nVar = { npcPrice or 0 };
                     local colW = math.max(48.0, (totalW - (colGap * 2.0)) / 3.0);
                     imgui.PushItemWidth(colW);
-                    imgui.InputInt("##stack_price", stVar, 0, 0);
+                    local changedStack = imgui.InputInt("##stack_price", stVar, 0, 0);
                     imgui.SameLine(0.0, colGap);
-                    imgui.InputInt("##single_price", sVar, 0, 0);
+                    local changedSingle = imgui.InputInt("##single_price", sVar, 0, 0);
                     imgui.SameLine(0.0, colGap);
-                    imgui.InputInt("##npc_price", nVar, 0, 0);
+                    local changedNpc = imgui.InputInt("##npc_price", nVar, 0, 0);
                     imgui.PopItemWidth();
                     imgui.SameLine(0.0, state.window.spaceToolTip);
                     imgui.AlignTextToFramePadding();
@@ -5413,10 +5556,15 @@ function renderSettingsSetPrices()
                     local s = math.max(0, tonumber(sVar[1]) or 0);
                     local st = math.max(0, tonumber(stVar[1]) or 0);
                     local n = math.max(0, tonumber(nVar[1]) or tonumber(basePrices[data.id]) or 0);
-                    imgui.SetVarValue(priceVar, s, st, n);
-                    settings.yields[gathering][yield].singlePrice = s;
-                    settings.yields[gathering][yield].stackPrice = st;
-                    settings.yields[gathering][yield].npcPrice = n;
+                    local changedAny = (changedStack or changedSingle or changedNpc) == true;
+                    if changedAny or s ~= (tonumber(singlePrice) or 0) or st ~= (tonumber(stackPrice) or 0) or n ~= (tonumber(npcPrice) or 0) then
+                        imgui.SetVarValue(priceVar, s, st, n);
+                        settings.yields[gathering][yield].singlePrice = s;
+                        settings.yields[gathering][yield].stackPrice = st;
+                        settings.yields[gathering][yield].npcPrice = n;
+                        writeDebugLog(string.format('setPrices sync gather=%s item=%s single=%d stack=%d npc=%d changed=%s',
+                            tostring(gathering), tostring(yield), tonumber(s) or 0, tonumber(st) or 0, tonumber(n) or 0, tostring(changedAny)));
+                    end
                     imgui.PopID();
                 end
             end
@@ -5424,6 +5572,7 @@ function renderSettingsSetPrices()
         end
         imgui.EndChild()
     end
+    imgui.PopStyleVar();
 end
 
 ----------------------------------------------------------------------------------------------------
@@ -5435,6 +5584,11 @@ function renderSettingsSetColors()
     state.values.colorSelectionsByGather = state.values.colorSelectionsByGather or {};
     state.values.colorSelectionsByGather[gathering] = state.values.colorSelectionsByGather[gathering] or {};
     local selectedColors = state.values.colorSelectionsByGather[gathering];
+    if state.values.setColorsBulkInitGather ~= gathering then
+        syncAllColorsVarForGather(gathering, "setColors_page_enter");
+        state.values.setColorsBulkInitGather = gathering;
+    end
+    pushSettingsPageMenuBarSizing();
     if imgui.BeginChild("Set Colors", { -1, state.window.heightSettingsContent }, imgui.GetVarValue(uiVariables['var_WindowVisible']), bit.bor(ImGuiWindowFlags.MenuBar, ImGuiWindowFlags.NoResize)) then
         setWindowFontScale(state.window.textScale);
         logScaleSnapshot("settings_colors_begin", "");
@@ -5444,8 +5598,8 @@ function renderSettingsSetColors()
                 writeDebugLog(string.format('setColors switch: %s -> %s', tostring(gathering), tostring(data.name)));
                 state.settings.setColors.gathering = data.name;
                 gathering = data.name;
-                local r, g, b, a = getDefaultYieldColorRgba();
-                imgui.SetVarValue(uiVariables["var_AllColors"], r, g, b, a);
+                syncAllColorsVarForGather(gathering, "setColors_switch");
+                state.values.setColorsBulkInitGather = gathering;
             end);
         end
         renderSettingsTitleBar("Colors", gathering, btnAction, gatherBtnBoost);
@@ -5494,7 +5648,7 @@ function renderSettingsSetColors()
             for yield, data in pairs(settings.yields[gathering]) do
                 if not applySelectedOnly or selectedColors[yield] then
                     local varName = string.format("var_%s_%s_color", gathering, yield);
-                    uiVariables[varName] = uiVariables[varName] or { {1.0, 1.0, 1.0, 1.0} };
+                    uiVariables[varName] = uiVariables[varName] or { 1.0, 1.0, 1.0, 1.0 };
                     imgui.SetVarValue(uiVariables[varName], color[1], color[2], color[3], 1.0);
                     settings.yields[gathering][yield].color = converted;
                     appliedCount = appliedCount + 1;
@@ -5525,20 +5679,27 @@ function renderSettingsSetColors()
             if imguiShowToolTip(string.format("Set the text color for %s when its displayed in the yield list.", yield), settings.general.showToolTips) then
                 imgui.SameLine(0.0, state.window.spaceToolTip);
             end
-            local r, g, b, a = colorToRGBA(settings.yields[gathering][yield].color);
-            imgui.PushStyleColor(ImGuiCol_Text, { r/255, g/255, b/255, a/255 });
+            local varName = string.format("var_%s_%s_color", gathering, yield);
+            uiVariables[varName] = uiVariables[varName] or { 1.0, 1.0, 1.0, 1.0 };
             imgui.PushItemWidth(state.window.widthWidgetDefault);
             local shortName = settings.yields[gathering][yield].short;
             local adjItemName = shortName or yield;
-            if (imgui.ColorEdit4(adjItemName, uiVariables[string.format("var_%s_%s_color", gathering, yield)])) then
+            local rowColorLabel = string.format("##set_color_%s_%s", gathering, yield);
+            if (imgui.ColorEdit4(rowColorLabel, uiVariables[varName])) then
                 applyYieldColorFromVar(gathering, yield);
                 writeDebugLog(string.format('setColors item changed: gather=%s item=%s', tostring(gathering), tostring(yield)));
             end
-            imgui.PopStyleColor();
             imgui.PopItemWidth();
+            imgui.SameLine();
+            local vr, vg, vb, va = imgui.GetVarValue(uiVariables[varName]);
+            imgui.TextColored(
+                { tonumber(vr) or 1.0, tonumber(vg) or 1.0, tonumber(vb) or 1.0, tonumber(va) or 1.0 },
+                adjItemName
+            );
         end
         imgui.EndChild()
     end
+    imgui.PopStyleVar();
 end
 
 ----------------------------------------------------------------------------------------------------
@@ -5550,6 +5711,7 @@ function renderSettingsSetAlerts()
     state.values.soundSelectionsByGather = state.values.soundSelectionsByGather or {};
     state.values.soundSelectionsByGather[gathering] = state.values.soundSelectionsByGather[gathering] or {};
     local selectedSounds = state.values.soundSelectionsByGather[gathering];
+    pushSettingsPageMenuBarSizing();
     if imgui.BeginChild("Set Alerts", { -1, state.window.heightSettingsContent }, imgui.GetVarValue(uiVariables['var_WindowVisible']), bit.bor(ImGuiWindowFlags.MenuBar, ImGuiWindowFlags.NoResize)) then
         setWindowFontScale(state.window.textScale);
         local gatherBtnBoost = 1.18;
@@ -5769,6 +5931,7 @@ function renderSettingsSetAlerts()
         end
         imgui.EndChild();
     end
+    imgui.PopStyleVar();
 end
 
 ----------------------------------------------------------------------------------------------------
@@ -5782,6 +5945,7 @@ function renderSettingsReports()
     local selectedReports = state.values.reportSelectionsByGather[gathering];
     local sortedReports = table.sortReportsByDate(reports[gathering], true);
     imgui.PushStyleVar(ImGuiStyleVar.WindowPadding, { 5, 5 });
+    pushSettingsPageMenuBarSizing();
     if imgui.BeginChild("Reports", { -1, state.window.heightSettingsContent }, imgui.GetVarValue(uiVariables['var_WindowVisible']), bit.bor(ImGuiWindowFlags.MenuBar, ImGuiWindowFlags.NoResize)) then
         logScaleSnapshot("settings_reports_begin", "");
         local gatherBtnBoost = 1.18;
@@ -6062,6 +6226,7 @@ function renderSettingsReports()
         imgui.EndChild();
     end
     imgui.PopStyleVar();
+    imgui.PopStyleVar();
 end
 
 ----------------------------------------------------------------------------------------------------
@@ -6069,6 +6234,7 @@ end
 -- desc: Renders the Reports section in settings.
 ----------------------------------------------------------------------------------------------------
 function renderSettingsFeedback()
+    pushSettingsPageMenuBarSizing();
     if imgui.BeginChild("Feedback", { -1, state.window.heightSettingsContent }, true, bit.bor(ImGuiWindowFlags.MenuBar, ImGuiWindowFlags.NoResize)) then
         setWindowFontScale(state.window.textScale);
         renderSettingsTitleBar("Feedback");
@@ -6153,6 +6319,7 @@ function renderSettingsFeedback()
         imgui.PopTextWrapPos();
         imgui.EndChild();
     end
+    imgui.PopStyleVar();
 end
 
 ----------------------------------------------------------------------------------------------------
@@ -6160,6 +6327,7 @@ end
 -- desc: Renders the About section in settings.
 ---------------------------------------------------------------------------------------------------
 function renderSettingsAbout()
+    pushSettingsPageMenuBarSizing();
     if imgui.BeginChild("About", { -1, state.window.heightSettingsContent }, true, bit.bor(ImGuiWindowFlags.MenuBar, ImGuiWindowFlags.NoResize)) then
         setWindowFontScale(state.window.textScale);
         renderSettingsTitleBar("About");
@@ -6192,6 +6360,7 @@ function renderSettingsAbout()
         imgui.Text("To everyone who reported bugs and submitted feedback, thanks for helping make Yield great!");
         imgui.EndChild();
     end
+    imgui.PopStyleVar();
 end
 
 ----------------------------------------------------------------------------------------------------

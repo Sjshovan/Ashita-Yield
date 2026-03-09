@@ -385,10 +385,11 @@ end
 -- desc: Converts a color to its rgba values.
 ----------------------------------------------------------------------------------------------------
 function colorToRGBA(c)
-    local a = bit.rshift(bit.band(c, 0xFF000000), 24);
-    local r = bit.rshift(bit.band(c, 0x00FF0000), 16);
-    local g = bit.rshift(bit.band(c, 0x0000FF00), 8);
-    local b = bit.band(c, 0x000000FF);
+    -- Use mask-after-shift to avoid sign-extension issues with negative D3DCOLOR ints.
+    local a = bit.band(bit.rshift(c, 24), 0xFF);
+    local r = bit.band(bit.rshift(c, 16), 0xFF);
+    local g = bit.band(bit.rshift(c, 8), 0xFF);
+    local b = bit.band(c, 0xFF);
     return r, g, b, a;
 end
 
