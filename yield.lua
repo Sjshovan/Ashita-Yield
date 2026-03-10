@@ -2022,14 +2022,10 @@ function loadUiVariables()
     writeDebugLog('loadUiVariables: end');
 end
 
-getGatherToolUnitPrice = function(gatherType)
-    ensureToolPriceSettings();
-    local gatherName = tostring(gatherType or state.gathering or "");
-    local toolPriceData = settings.toolPrices[gatherName];
+local function resolveToolUnitPriceFromData(toolPriceData)
     if type(toolPriceData) ~= "table" then
         return 0;
     end
-
     local singlePrice = tonumber(toolPriceData.singlePrice) or 0;
     local stackPrice = tonumber(toolPriceData.stackPrice) or 0;
     local stackSize = tonumber(toolPriceData.stackSize) or 0;
@@ -2049,6 +2045,43 @@ getGatherToolUnitPrice = function(gatherType)
     end
 
     return math.max(0, math.floor(tonumber(unitPrice) or 0));
+end
+
+getGatherToolUnitPrice = function(gatherType)
+    ensureToolPriceSettings();
+    local gatherName = tostring(gatherType or state.gathering or "");
+    local directData = settings.toolPrices[gatherName];
+    local directUnitPrice = resolveToolUnitPriceFromData(directData);
+    if directUnitPrice > 0 then
+        return directUnitPrice;
+    end
+
+    -- Shared-tool fallback (e.g. pickaxe for mining/excavating).
+    local gatherToolId = nil;
+    for _, data in ipairs(gatherTypes) do
+        if tostring(data.name) == gatherName then
+            gatherToolId = tonumber(data.toolId);
+            break;
+        end
+    end
+
+    if gatherToolId ~= nil then
+        for _, data in ipairs(gatherTypes) do
+            local otherName = tostring(data.name or "");
+            if otherName ~= "" and otherName ~= gatherName and tonumber(data.toolId) == gatherToolId then
+                local fallbackUnitPrice = resolveToolUnitPriceFromData(settings.toolPrices[otherName]);
+                if fallbackUnitPrice > 0 then
+                    writeDebugLog(string.format(
+                        'tool_price fallback gather=%s source=%s toolId=%s unit=%s',
+                        tostring(gatherName), tostring(otherName), tostring(gatherToolId), tostring(fallbackUnitPrice)
+                    ));
+                    return fallbackUnitPrice;
+                end
+            end
+        end
+    end
+
+    return 0;
 end
 
 refreshGatherToolCostTotal = function(gatherType)
@@ -3302,6 +3335,99 @@ local function refreshReportsForGather(gatherType)
     writeDebugLog(string.format('refreshReportsForGather gather=%s count=%d dir=%s', tostring(gatherType), #reports[gatherType], tostring(dirName)));
 end
 
+local function trimReportLine(s)
+    return tostring(s or ""):gsub("^%s+", ""):gsub("%s+$", "");
+end
+
+local function parseReportNumber(s)
+    local token = tostring(s or ""):gsub(",", ""):match("[-+]?%d+%.?%d*");
+    if token == nil then
+        return nil;
+    end
+    return tonumber(token);
+end
+
+local function getReportValueColor(key, value)
+    local plain = { 0.77, 0.83, 0.80, 1.0 };
+    local warn = { 1.0, 1.0, 0.54, 1.0 };
+    local good = { 0.39, 0.96, 0.13, 1.0 };
+    local bad = { 1.0, 0.615, 0.615, 1.0 };
+    local metric = trimReportLine(key):lower();
+    local rawValue = trimReportLine(value);
+    local n = parseReportNumber(rawValue);
+
+    if metric == "net profit" then
+        if n ~= nil and n > 0 then return good; end
+        if n ~= nil and n < 0 then return bad; end
+        return warn;
+    end
+    if metric == "tool cost" or metric == "lost" or metric == "breaks" then
+        if n ~= nil and n > 0 then return bad; end
+        return plain;
+    end
+    if metric == "estimated value" or metric == "value per hour" or metric == "yields per hour" or metric == "yields" then
+        if n ~= nil and n > 0 then return good; end
+        return plain;
+    end
+    if metric == "tools used" then
+        if n ~= nil and n > 0 then return warn; end
+        return plain;
+    end
+    if metric == "success rate" then
+        if n ~= nil and n >= 75 then return good; end
+        if n ~= nil and n >= 40 then return warn; end
+        if n ~= nil then return bad; end
+        return plain;
+    end
+    if metric == "target reached" then
+        local lowered = string.lower(rawValue);
+        if lowered == "yes" then return good; end
+        if lowered == "no" then return bad; end
+        return plain;
+    end
+    return plain;
+end
+
+local function renderReportLineStyled(line)
+    local reportTitleColor = { 0.60, 0.86, 1.0, 1.0 };
+    local reportSectionColor = { 1.0, 0.84, 0.48, 1.0 };
+    local reportSeparatorColor = { 0.30, 0.33, 0.36, 1.0 };
+    local reportKeyColor = { 0.86, 0.92, 0.96, 1.0 };
+    local original = tostring(line or "");
+    local trimmed = trimReportLine(original);
+    if trimmed == "" then
+        imgui.Spacing();
+        return;
+    end
+
+    if string.match(trimmed, "^%-+$") then
+        imgui.TextColored(reportSeparatorColor, trimmed);
+        return;
+    end
+
+    if string.find(trimmed, "YIELD REPORT", 1, true) then
+        imgui.TextColored(reportTitleColor, trimmed);
+        return;
+    end
+
+    if trimmed == "ZONES" or trimmed == "METRICS" or trimmed == "YIELDS" then
+        imgui.TextColored(reportSectionColor, trimmed);
+        return;
+    end
+
+    local key, value = string.match(trimmed, "^([^:]+):%s*(.*)$");
+    if key ~= nil then
+        key = trimReportLine(key);
+        value = value or "";
+        imgui.TextColored(reportKeyColor, string.format("%s:", key));
+        imgui.SameLine();
+        imgui.TextColored(getReportValueColor(key, value), tostring(value));
+        return;
+    end
+
+    imgui.TextUnformatted(original);
+end
+
 ----------------------------------------------------------------------------------------------------
 -- func: generateGatheringReport
 -- desc: Generate a report file using tracked metrics.
@@ -3371,8 +3497,18 @@ function generateGatheringReport(gatherType)
         file:write(sep);
         file:write("METRICS\n");
         file:write(sep);
+        local orderedTotals = { "attempts", "yields", "lost", "breaks" };
+        local seenTotals = {};
+        for _, key in ipairs(orderedTotals) do
+            if metricData.totals[key] ~= nil then
+                file:write(string.format("\t%s: %s\n", formatMetricLabel(key), metricData.totals[key]));
+                seenTotals[key] = true;
+            end
+        end
         for name, val in pairs(metricData.totals) do
-            file:write(string.format("\t%s: %s\n", formatMetricLabel(name), val));
+            if not seenTotals[name] and name ~= "toolCost" then
+                file:write(string.format("\t%s: %s\n", formatMetricLabel(name), val));
+            end
         end
         local successRate = metricData.totals.yields/metricData.totals.attempts * 100
         if successRate == math.huge or successRate ~= successRate then successRate = 0.0 end
@@ -3382,6 +3518,7 @@ function generateGatheringReport(gatherType)
         file:write(string.format("\tTime Passed: %s\n", formatElapsedTime(metricData.secondsPassed)));
         file:write(string.format("\tEstimated Value: %s\n", metricData.estimatedValue));
         file:write(string.format("\tTools Used: %d\n", toolsUsedTotal));
+        file:write(string.format("\tTool Cost: %s\n", toolCostTotal));
         file:write(string.format("\tNet Profit: %s\n", netProfit));
         file:write(string.format("\tYields per Hour: %.2f\n", metricData.points.yields[#metricData.points.yields]));
         file:write(string.format("\tValue per Hour: %.2f\n", metricData.points.values[#metricData.points.values]));
@@ -6239,18 +6376,19 @@ function renderSettingsSetPrices()
             local totalW = state.window.widthWidgetDefault;
             local colW = math.max(48.0, (totalW - (colGap * 2.0)) / 3.0);
             local headerStartX = imgui.GetCursorPosX();
-            local labels = { "Stack", "Single", "NPC" };
+            local headerStartY = imgui.GetCursorPosY();
+            local headerHeight = tonumber(state.window.heightPriceColumns) or 0.0;
+            local lineH = tonumber(imgui.GetTextLineHeight()) or 0.0;
+            local centeredY = headerStartY + math.max(0.0, (headerHeight - lineH) / 2.0);
+            local labels = { "AH Stack", "AH Single", "NPC Single" };
             for idx, label in ipairs(labels) do
                 local labelW = imgui.CalcTextSize(label);
                 if type(labelW) == "table" and labelW.x ~= nil then labelW = labelW.x; end
                 local cellX = headerStartX + ((idx - 1) * (colW + colGap));
                 local centeredX = cellX + ((colW - (tonumber(labelW) or 0.0)) / 2.0);
                 imgui.SetCursorPosX(centeredX);
-                imgui.AlignTextToFramePadding();
+                imgui.SetCursorPosY(centeredY);
                 imgui.TextUnformatted(label);
-                if idx < #labels then
-                    imgui.SameLine();
-                end
             end
 
             imgui.EndChild();
@@ -6283,7 +6421,6 @@ function renderSettingsSetPrices()
                 toolLabel = string.format("Tool Cost (%s)", tostring(selectedGatherData.tool));
             end
 
-            imgui.Separator();
             imgui.PushID(string.format("%s::tool_prices", tostring(gathering)));
             imgui.AlignTextToFramePadding();
             if imguiShowToolTip("Set tool pricing using the same priority as yields: stack/stackSize, then single, then npc.", settings.general.showToolTips) then
@@ -7047,8 +7184,8 @@ function renderSettingsReports()
             if reportScale > 1.5 then reportScale = 1.5; end
             local baseTextScale = tonumber(state.window.textScale) or 1.0;
             if baseTextScale < 0.25 then baseTextScale = 1.0; end
-            -- Small calibration: report body glyphs render perceptually larger than control text.
-            local calibratedBase = baseTextScale * 0.80;
+            -- Calibration: report body glyphs render larger than control text at the same scale.
+            local calibratedBase = baseTextScale * 0.70;
             setWindowFontScale(calibratedBase * reportScale);
             imgui.PushTextWrapPos(getAvailX(imgui.GetContentRegionAvail()));
             local fname = state.values.currentReportName;
@@ -7064,7 +7201,7 @@ function renderSettingsReports()
                     local lines = linesFrom(fpath);
                     if #lines > 0 then
                         for _, line in pairs(lines) do
-                            imgui.TextUnformatted(line);
+                            renderReportLineStyled(line);
                         end
                     else
                         imgui.TextColored({1, 0.615, 0.615, 1}, string.format("File (%s) is unable to be read. Either this file has been moved, deleted, or you have changed characters. Reload yield to update this list.", state.values.currentReportName))
