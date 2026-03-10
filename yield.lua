@@ -344,7 +344,23 @@ ashita.timer = timer_module;
 -- Variables
 ----------------------------------------------------------------------------------------------------
 local settings_lib = require('settings');
-local default_settings = table.copy(defaultSettingsTemplate);
+local function makeSettingsLoadSafe(defaults)
+    if type(defaults) ~= "table" then
+        return defaults;
+    end
+    if type(defaults.toolPrices) ~= "table" then
+        defaults.toolPrices = {};
+        return defaults;
+    end
+    for gatherName, toolPrice in pairs(defaults.toolPrices) do
+        if type(toolPrice) == "table" then
+            defaults.toolPrices[gatherName] = math.max(0, math.floor(tonumber(toolPrice.singlePrice) or 0));
+        end
+    end
+    return defaults;
+end
+
+local default_settings = makeSettingsLoadSafe(table.copy(defaultSettingsTemplate));
 local settings = settings_lib.load(default_settings);
 local state    = table.copy(stateTemplate);
 local metrics  = {};
@@ -357,7 +373,11 @@ local ashitaPlayer          = AshitaCore:GetMemoryManager():GetPlayer();
 local ashitaInventory       = AshitaCore:GetMemoryManager():GetInventory();
 local ashitaTarget          = AshitaCore:GetMemoryManager():GetTarget();
 local ashitaEntity          = AshitaCore:GetMemoryManager():GetEntity();
+local getGatherToolUnitPrice = nil;
+local refreshGatherToolCostTotal = nil;
 local lastMoonSourceLogged  = nil;
+local vanaTimeSigPtr        = nil;
+local vanaTimeSigTried      = false;
 local moonPhasePercentCycle = {
     100, 98, 95, 93, 90, 88, 86, 83, 81, 79, 76, 74, 71, 69, 67, 64, 62, 60, 57, 55, 52,
     50, 48, 45, 43, 40, 38, 36, 33, 31, 29, 26, 24, 21, 19, 17, 14, 12, 10, 7, 5, 2, 0,
@@ -451,7 +471,15 @@ local metricsTotalsToolTips =
     breaks   = "Total number of broken tools.",
     yields   = "Total successful gathers.",
     attempts = "Total attempts at gathering.",
+    toolCost = "Total cost of tools consumed during this session.",
 }
+
+local function formatMetricLabel(metricKey)
+    if tostring(metricKey) == "toolCost" then
+        return "Tool Cost";
+    end
+    return string.upperfirst(tostring(metricKey or ""));
+end
 
 local windowScales =
 {
@@ -803,6 +831,86 @@ local function ensureAlertEventSettings()
                 end
                 break;
             end
+        end
+    end
+end
+
+local function ensureToolPriceSettings()
+    local function getGatherTypeByName(gatherName)
+        for _, gatherData in ipairs(gatherTypes) do
+            if tostring(gatherData.name) == tostring(gatherName) then
+                return gatherData;
+            end
+        end
+        return nil;
+    end
+
+    local function getDefaultToolPricing(gatherName)
+        local defaults = {
+            singlePrice = 0,
+            stackPrice = 0,
+            npcPrice = 0,
+            stackSize = 12,
+        };
+
+        local gatherData = getGatherTypeByName(gatherName);
+        if gatherName == "clamming" then
+            defaults.stackSize = 1;
+            return defaults;
+        end
+        if gatherName == "fishing" then
+            -- Fishing bait is slot-based in this addon; keep generic defaults.
+            defaults.stackSize = 12;
+            return defaults;
+        end
+        if gatherData and tonumber(gatherData.toolId) ~= nil then
+            local toolId = tonumber(gatherData.toolId) or 0;
+            defaults.npcPrice = tonumber(basePrices[toolId]) or 0;
+            if ashitaResourceManager and ashitaResourceManager.GetItemById then
+                local resItem = ashitaResourceManager:GetItemById(toolId);
+                if resItem and tonumber(resItem.StackSize) ~= nil and tonumber(resItem.StackSize) > 0 then
+                    defaults.stackSize = math.floor(tonumber(resItem.StackSize));
+                end
+            end
+        end
+        return defaults;
+    end
+
+    local function normalizeToolPriceEntry(raw, defaults)
+        defaults = defaults or getDefaultToolPricing("");
+        local entry = {};
+        if type(raw) == "table" then
+            entry.singlePrice = math.max(0, math.floor(tonumber(raw.singlePrice) or 0));
+            entry.stackPrice = math.max(0, math.floor(tonumber(raw.stackPrice) or 0));
+            entry.npcPrice = math.max(0, math.floor(tonumber(raw.npcPrice) or defaults.npcPrice or 0));
+            local stackSize = tonumber(raw.stackSize) or tonumber(defaults.stackSize) or 12;
+            if stackSize <= 0 then stackSize = 12; end
+            entry.stackSize = math.max(1, math.floor(stackSize));
+            return entry;
+        end
+
+        local legacySingle = tonumber(raw);
+        if legacySingle ~= nil then
+            entry.singlePrice = math.max(0, math.floor(legacySingle));
+            entry.stackPrice = 0;
+            entry.npcPrice = math.max(0, math.floor(tonumber(defaults.npcPrice) or 0));
+            entry.stackSize = math.max(1, math.floor(tonumber(defaults.stackSize) or 12));
+            return entry;
+        end
+
+        entry.singlePrice = 0;
+        entry.stackPrice = 0;
+        entry.npcPrice = math.max(0, math.floor(tonumber(defaults.npcPrice) or 0));
+        entry.stackSize = math.max(1, math.floor(tonumber(defaults.stackSize) or 12));
+        return entry;
+    end
+
+    settings.toolPrices = settings.toolPrices or {};
+    for _, gatherData in ipairs(gatherTypes) do
+        local gatherName = tostring(gatherData.name or "");
+        if gatherName ~= "" then
+            local defaults = getDefaultToolPricing(gatherName);
+            settings.toolPrices[gatherName] = normalizeToolPriceEntry(settings.toolPrices[gatherName], defaults);
         end
     end
 end
@@ -1789,6 +1897,7 @@ end
 ----------------------------------------------------------------------------------------------------
 function loadUiVariables()
     ensureAlertEventSettings();
+    ensureToolPriceSettings();
     ensureScaleTuningSettings();
     sanitizeColorSettings();
     writeDebugLog('loadUiVariables: begin');
@@ -1855,10 +1964,20 @@ function loadUiVariables()
         local priceModeVar = string.format("var_%s_priceMode", gathering);
         if not uiVariables[priceModeVar] then uiVariables[priceModeVar] = { false }; end
         imgui.SetVarValue(uiVariables[priceModeVar], settings.priceModes[gathering]);
+        local toolPriceVar = string.format("var_%s_toolPrices", gathering);
+        if not uiVariables[toolPriceVar] then uiVariables[toolPriceVar] = { 0, 0, 0 }; end
+        local toolPriceData = settings.toolPrices[gathering] or {};
+        imgui.SetVarValue(
+            uiVariables[toolPriceVar],
+            tonumber(toolPriceData.singlePrice) or 0,
+            tonumber(toolPriceData.stackPrice) or 0,
+            tonumber(toolPriceData.npcPrice) or 0
+        );
         writeDebugLog(string.format('loadUiVariables: gather=%s loaded_colors=%d', tostring(gathering), loadedCount));
     end
 
     for gathering, data in pairs(metrics) do -- per metric
+        refreshGatherToolCostTotal(gathering);
         imgui.SetVarValue(uiVariables[string.format("var_%s_estimatedValue", gathering)], data.estimatedValue);
     end
 
@@ -1901,6 +2020,49 @@ function loadUiVariables()
         end
     end
     writeDebugLog('loadUiVariables: end');
+end
+
+getGatherToolUnitPrice = function(gatherType)
+    ensureToolPriceSettings();
+    local gatherName = tostring(gatherType or state.gathering or "");
+    local toolPriceData = settings.toolPrices[gatherName];
+    if type(toolPriceData) ~= "table" then
+        return 0;
+    end
+
+    local singlePrice = tonumber(toolPriceData.singlePrice) or 0;
+    local stackPrice = tonumber(toolPriceData.stackPrice) or 0;
+    local stackSize = tonumber(toolPriceData.stackSize) or 0;
+    local npcPrice = tonumber(toolPriceData.npcPrice) or 0;
+    local unitPrice = 0;
+
+    if stackPrice > 0 then
+        if stackSize > 0 then
+            unitPrice = stackPrice / stackSize;
+        else
+            unitPrice = stackPrice;
+        end
+    elseif singlePrice > 0 then
+        unitPrice = singlePrice;
+    elseif npcPrice > 0 then
+        unitPrice = npcPrice;
+    end
+
+    return math.max(0, math.floor(tonumber(unitPrice) or 0));
+end
+
+refreshGatherToolCostTotal = function(gatherType)
+    local gatherName = tostring(gatherType or "");
+    if gatherName == "" then
+        return 0;
+    end
+    metrics[gatherName] = metrics[gatherName] or table.copy(metricsTemplate);
+    metrics[gatherName].totals = metrics[gatherName].totals or table.copy(metricsTemplate.totals);
+    metrics[gatherName].toolUnitsUsed = math.max(0, math.floor(tonumber(metrics[gatherName].toolUnitsUsed) or 0));
+    local toolUnitsUsed = metrics[gatherName].toolUnitsUsed;
+    local toolCost = math.floor(toolUnitsUsed * getGatherToolUnitPrice(gatherName));
+    metrics[gatherName].totals.toolCost = math.max(0, tonumber(toolCost) or 0);
+    return metrics[gatherName].totals.toolCost;
 end
 
 ----------------------------------------------------------------------------------------------------
@@ -1946,6 +2108,7 @@ end
 -- desc: Update the global playerStorage table with gathering tool counts and available inventory space every second.
 ----------------------------------------------------------------------------------------------------
 function updatePlayerStorage()
+    state.values.toolCountLast = state.values.toolCountLast or {};
     local storage = {};
     for _, data in ipairs(gatherTypes) do
         if data.name ~= "clamming" then
@@ -1965,6 +2128,26 @@ function updatePlayerStorage()
                 storage[data.tool] = 0
             end
         end
+
+        local gatherName = tostring(data.name or "");
+        local currentCount = tonumber(storage[data.tool]) or 0;
+        local lastCount = tonumber(state.values.toolCountLast[gatherName]);
+        if lastCount == nil then
+            lastCount = currentCount;
+        end
+        if state.timers[gatherName] and state.gathering == gatherName then
+            metrics[gatherName] = metrics[gatherName] or table.copy(metricsTemplate);
+            metrics[gatherName].totals = metrics[gatherName].totals or table.copy(metricsTemplate.totals);
+            metrics[gatherName].toolUnitsUsed = tonumber(metrics[gatherName].toolUnitsUsed) or 0;
+            if currentCount < lastCount then
+                local consumed = lastCount - currentCount;
+                metrics[gatherName].toolUnitsUsed = metrics[gatherName].toolUnitsUsed + consumed;
+                writeDebugLog(string.format('tool_cost consume gather=%s delta=%d used=%d',
+                    tostring(gatherName), tonumber(consumed) or 0, tonumber(metrics[gatherName].toolUnitsUsed) or 0));
+            end
+        end
+        state.values.toolCountLast[gatherName] = currentCount;
+        refreshGatherToolCostTotal(gatherName);
     end
     storage["available"], storage["available_pct"] = getAvailableStorageFromContainers({0});
     playerStorage = storage;
@@ -2094,6 +2277,7 @@ local function seedFakeYieldsForGather(gathering, gatherIndex)
     metrics[gathering].secondsPassed = math.max(120, totalYields * 8);
     metrics[gathering].points.yields = { math.max(1, totalYields * 2) };
     metrics[gathering].points.values = { math.max(0, estimatedValue * 2) };
+    refreshGatherToolCostTotal(gathering);
 
     local estimatedVarName = string.format("var_%s_estimatedValue", gathering);
     if uiVariables[estimatedVarName] ~= nil then
@@ -2314,8 +2498,11 @@ function updateAllStates(newState)
     metrics[newState].points.yields = metrics[newState].points.yields or { 0 };
     metrics[newState].points.values = metrics[newState].points.values or { 0 };
     metrics[newState].yields = metrics[newState].yields or {};
+    metrics[newState].toolUnitsUsed = tonumber(metrics[newState].toolUnitsUsed) or 0;
     metrics[newState].estimatedValue = tonumber(metrics[newState].estimatedValue) or 0;
     metrics[newState].secondsPassed = tonumber(metrics[newState].secondsPassed) or 0;
+    metrics[newState].totals.toolCost = tonumber(metrics[newState].totals.toolCost) or 0;
+    refreshGatherToolCostTotal(newState);
 
     settings.zones[newState] = settings.zones[newState] or {};
     state.timers[newState] = state.timers[newState] or false;
@@ -2636,16 +2823,62 @@ local function logMoonSource(source, percent)
     end
 end
 
+local function tryMoonPercentFromVanaPointer()
+    if not vanaTimeSigTried then
+        vanaTimeSigTried = true;
+        local ok, ptr = pcall(function()
+            if ashita == nil or ashita.memory == nil or ashita.memory.find == nil then
+                return 0;
+            end
+            -- Same signature used by luashitacast for pVanaTime.
+            return ashita.memory.find('FFXiMain.dll', 0, 'B0015EC390518B4C24088D4424005068', 0, 0);
+        end);
+        if ok and tonumber(ptr) ~= nil and tonumber(ptr) ~= 0 then
+            vanaTimeSigPtr = tonumber(ptr);
+        else
+            vanaTimeSigPtr = false;
+            writeDebugLog('moon_percent vana_signature_unavailable');
+        end
+    end
+    if type(vanaTimeSigPtr) ~= 'number' then
+        return nil;
+    end
+
+    local ok, percent = pcall(function()
+        if ashita == nil or ashita.memory == nil or ashita.memory.read_uint32 == nil then
+            return nil;
+        end
+        local timeBase = ashita.memory.read_uint32(vanaTimeSigPtr + 0x34);
+        if timeBase == nil or timeBase == 0 then
+            return nil;
+        end
+        local rawTime = ashita.memory.read_uint32(timeBase + 0x0C);
+        if rawTime == nil or rawTime == 0 then
+            return nil;
+        end
+        local timestampRaw = tonumber(rawTime) + 92514960;
+        local vanaDay = math.floor(timestampRaw / 3456);
+        local moonIndex = ((vanaDay + 26) % 84) + 1;
+        return moonPhasePercentCycle[moonIndex];
+    end);
+    if not ok then
+        return nil;
+    end
+    percent = clampMoonPercent(percent);
+    if percent ~= nil then
+        return percent, 'vana_pointer_cycle';
+    end
+    return nil;
+end
+
 local function getMoonPercentSafeV4()
-    -- Deterministic moon percent using Earth epoch time; avoids native pointer calls
-    -- that can crash with access violations on some Ashita/Horizon builds.
-    local unixNow = os.time();
-    local vanaEpochOffset = 92514960 - 3456;
-    local vanaDay = math.floor((tonumber(unixNow) + vanaEpochOffset) / 3456);
-    local moonIndex = ((vanaDay + 26) % 84) + 1;
-    local percent = clampMoonPercent(moonPhasePercentCycle[moonIndex]) or 0;
-    logMoonSource('epoch_formula', percent);
-    return percent;
+    local percent, source = tryMoonPercentFromVanaPointer();
+    if percent ~= nil then
+        logMoonSource(source, percent);
+        return percent;
+    end
+    logMoonSource('vana_pointer_unavailable', 0);
+    return 0;
 end
 
 local function openConfirmModal(actionText, helpText, danger, confirmAction, cancelAction)
@@ -2774,6 +3007,7 @@ local function isTrackedSettingsUiVar(name)
         return true;
     end
     if string.match(name, '^var_.+_.+_prices$') then return true; end
+    if string.match(name, '^var_.+_toolPrices$') then return true; end
     if string.match(name, '^var_.+_.+_color$') then return true; end
     if string.match(name, '^var_.+_.+_soundIndex$') then return true; end
     if string.match(name, '^var_.+_.+_soundFile$') then return true; end
@@ -2839,6 +3073,16 @@ local function applyPricesDefaults(gathering)
         settings.yields[gathering][yield].npcPrice = defaultNpc;
         imgui.SetVarValue(uiVariables[string.format("var_%s_%s_prices", gathering, yield)], 0, 0, defaultNpc);
     end
+    ensureToolPriceSettings();
+    local toolPriceData = settings.toolPrices[gathering] or { singlePrice = 0, stackPrice = 0, npcPrice = 0, stackSize = 12 };
+    toolPriceData.singlePrice = 0;
+    toolPriceData.stackPrice = 0;
+    toolPriceData.npcPrice = tonumber(toolPriceData.npcPrice) or 0;
+    settings.toolPrices[gathering] = toolPriceData;
+    local toolVarName = string.format("var_%s_toolPrices", gathering);
+    uiVariables[toolVarName] = uiVariables[toolVarName] or { 0, 0, 0 };
+    imgui.SetVarValue(uiVariables[toolVarName], 0, 0, toolPriceData.npcPrice);
+    refreshGatherToolCostTotal(gathering);
 end
 
 local function applyColorsDefaults(gathering)
@@ -3072,6 +3316,13 @@ function generateGatheringReport(gatherType)
     local zonesCount = table.count(zones);
     local metricData = metrics[gatherType];
     if metricData == nil then return false; end
+    metricData.totals = metricData.totals or table.copy(metricsTemplate.totals);
+    metricData.points = metricData.points or table.copy(metricsTemplate.points);
+    metricData.points.yields = metricData.points.yields or { 0 };
+    metricData.points.values = metricData.points.values or { 0 };
+    metricData.toolUnitsUsed = math.max(0, math.floor(tonumber(metricData.toolUnitsUsed) or 0));
+    local toolsUsedTotal = metricData.toolUnitsUsed;
+    local toolCostTotal = refreshGatherToolCostTotal(gatherType);
     local zoneName = zoneNames[getPlayerZoneId()] or 'Unknown Zone';
     if zonesCount > 0 then -- there has been some activity here.
         zoneName = zoneNames[zones[1]] or zoneName;
@@ -3121,14 +3372,17 @@ function generateGatheringReport(gatherType)
         file:write("METRICS\n");
         file:write(sep);
         for name, val in pairs(metricData.totals) do
-            file:write(string.format("\t%s: %s\n", name, val));
+            file:write(string.format("\t%s: %s\n", formatMetricLabel(name), val));
         end
         local successRate = metricData.totals.yields/metricData.totals.attempts * 100
         if successRate == math.huge or successRate ~= successRate then successRate = 0.0 end
         if successRate < 0 then successRate = 0.0 end
+        local netProfit = (tonumber(metricData.estimatedValue) or 0) - (tonumber(toolCostTotal) or 0);
         file:write(string.format("\tSuccess Rate: %.2f%%\n", successRate, 0, 100));
         file:write(string.format("\tTime Passed: %s\n", formatElapsedTime(metricData.secondsPassed)));
         file:write(string.format("\tEstimated Value: %s\n", metricData.estimatedValue));
+        file:write(string.format("\tTools Used: %d\n", toolsUsedTotal));
+        file:write(string.format("\tNet Profit: %s\n", netProfit));
         file:write(string.format("\tYields per Hour: %.2f\n", metricData.points.yields[#metricData.points.yields]));
         file:write(string.format("\tValue per Hour: %.2f\n", metricData.points.values[#metricData.points.values]));
         file:write(string.format("\tTarget Value: %s\n", settings.general.targetValue));
@@ -3174,6 +3428,7 @@ end
 function saveSettings()
     writeDebugLog('saveSettings begin');
     ensureAlertEventSettings();
+    ensureToolPriceSettings();
     sanitizeColorSettings();
     -- Obtain the configuration variables..
     settings.general.opacity               = imgui.GetVarValue(uiVariables["var_WindowOpacity"]);
@@ -3255,6 +3510,25 @@ function saveSettings()
             end
         end
         settings.priceModes[gathering] = imgui.GetVarValue(uiVariables[string.format("var_%s_priceMode", gathering)]);
+        local toolVarName = string.format("var_%s_toolPrices", gathering);
+        local toolData = settings.toolPrices[gathering] or {};
+        local singleTool = tonumber(toolData.singlePrice) or 0;
+        local stackTool = tonumber(toolData.stackPrice) or 0;
+        local npcTool = tonumber(toolData.npcPrice) or 0;
+        local stackSizeTool = tonumber(toolData.stackSize) or 12;
+        if uiVariables[toolVarName] ~= nil then
+            local vSingle, vStack, vNpc = imgui.GetVarValue(uiVariables[toolVarName]);
+            if vSingle ~= nil then singleTool = tonumber(vSingle) or singleTool; end
+            if vStack ~= nil then stackTool = tonumber(vStack) or stackTool; end
+            if vNpc ~= nil then npcTool = tonumber(vNpc) or npcTool; end
+        end
+        settings.toolPrices[gathering] = {
+            singlePrice = math.max(0, math.floor(singleTool)),
+            stackPrice = math.max(0, math.floor(stackTool)),
+            npcPrice = math.max(0, math.floor(npcTool)),
+            stackSize = math.max(1, math.floor(tonumber(stackSizeTool) or 12)),
+        };
+        refreshGatherToolCostTotal(gathering);
         writeDebugLog(string.format('saveSettings: gather=%s saved_colors=%d zero_colors=%d', tostring(gathering), savedColorCount, savedZeroColorCount));
     end
 
@@ -3304,6 +3578,7 @@ ashita.events.register('load', 'yield_load', function()
 
     -- Settings already loaded at top of file
     ensureAlertEventSettings();
+    ensureToolPriceSettings();
     settings.general.windowScale = clampWindowScale(settings.general.windowScale or windowScales[settings.general.windowScaleIndex] or 1.0);
     settings.general.windowScaleIndex = nearestWindowScaleIndex(settings.general.windowScale);
     ensureScaleTuningSettings();
@@ -3317,6 +3592,10 @@ ashita.events.register('load', 'yield_load', function()
         else
             metrics[data.name] = table.copy(metricsTemplate);
         end
+        metrics[data.name].totals = metrics[data.name].totals or table.copy(metricsTemplate.totals);
+        metrics[data.name].toolUnitsUsed = tonumber(metrics[data.name].toolUnitsUsed) or 0;
+        metrics[data.name].totals.toolCost = tonumber(metrics[data.name].totals.toolCost) or 0;
+        refreshGatherToolCostTotal(data.name);
         -- Initialize state timers..
         state.timers[data.name] = false;
         -- Add estimated value ui variables...
@@ -3367,6 +3646,7 @@ ashita.events.register('load', 'yield_load', function()
         end
         -- per gathering
         uiVariables[string.format("var_%s_priceMode", gathering)] = { false };
+        uiVariables[string.format("var_%s_toolPrices", gathering)] = { 0, 0, 0 };
     end
 
     -- Retrieve sounds files..
@@ -3390,6 +3670,7 @@ ashita.events.register('load', 'yield_load', function()
     if ashita.timer.create('updatePlayerStorage', 1, 0, updatePlayerStorage) then
         ashita.timer.start('updatePlayerStorage')
     end
+    runSafe('updatePlayerStorage_initial', updatePlayerStorage);
 
     if ashita.timer.create('inactivityCheck', 1, 0, function()
         if state.timers[state.gathering] then
@@ -3556,6 +3837,11 @@ ashita.events.register('text_in', 'yield_text_in', function(e)
         local ok, err = pcall(function()
         if not state.timers[state.gathering] then
             state.timers[state.gathering] = true
+            state.values.toolCountLast = state.values.toolCountLast or {};
+            local gatherDataInit = getGatherTypeData(state.gathering);
+            if gatherDataInit and gatherDataInit.tool ~= nil then
+                state.values.toolCountLast[state.gathering] = tonumber(playerStorage[gatherDataInit.tool]) or 0;
+            end
         end
 
         local val = 0;
@@ -4914,7 +5200,9 @@ ashita.events.register('d3d_present', 'yield_render', function()
 
     -- totals metrics
     for total, metric in pairs(table.sortKeysByLength(metrics[state.gathering].totals, true)) do
-        if state.gathering == "digging" and metric == "breaks" then
+        if metric == "toolCost" then
+            -- Rendered in the dedicated tools section below.
+        elseif state.gathering == "digging" and metric == "breaks" then
             if imguiShowToolTip("Current Moon percentage.", settings.general.showToolTips) then
                 imgui.SameLine(0.0, state.window.spaceToolTip);
             end
@@ -4926,7 +5214,7 @@ ashita.events.register('d3d_present', 'yield_render', function()
             if imguiShowToolTip(metricsTotalsToolTips[metric], settings.general.showToolTips) then
                 imgui.SameLine(0.0, state.window.spaceToolTip);
             end
-            imgui.Text(string.format("%s:", string.upperfirst(metric)));
+            imgui.Text(string.format("%s:", formatMetricLabel(metric)));
             if settings.general.showToolTips and imgui.IsItemHovered() then
                 imgui.SetTooltip(tostring(metricsTotalsToolTips[metric] or ""));
             end
@@ -4996,6 +5284,34 @@ ashita.events.register('d3d_present', 'yield_render', function()
     end
     imgui.Text(value);
     imgui.PopStyleColor();
+
+    if imguiShowToolTip("Total tools consumed during this session.", settings.general.showToolTips) then
+        imgui.SameLine(0.0, state.window.spaceToolTip);
+    end
+    imgui.Text("Tools Used:");
+    if settings.general.showToolTips and imgui.IsItemHovered() then
+        imgui.SetTooltip("This metric drives Tool Cost.");
+    end
+    imgui.SameLine();
+    local gatherToolsUsed = math.max(0, math.floor(tonumber(metrics[state.gathering].toolUnitsUsed) or 0));
+    imgui.Text(tostring(gatherToolsUsed));
+
+    if imguiShowToolTip("Total configured cost of tools consumed this session.", settings.general.showToolTips) then
+        imgui.SameLine(0.0, state.window.spaceToolTip);
+    end
+    imgui.Text("Tool Cost:");
+    if settings.general.showToolTips and imgui.IsItemHovered() then
+        imgui.SetTooltip("Computed as Tools Used x Set Prices tool unit cost.");
+    end
+    imgui.SameLine();
+    local gatherToolCost = tonumber(metrics[state.gathering].totals.toolCost) or 0;
+    if gatherToolCost > 0 then
+        imgui.PushStyleColor(ImGuiCol_Text, { 1, 0.615, 0.615, 1 });
+    else
+        imgui.PushStyleColor(ImGuiCol_Text, { 0.77, 0.83, 0.80, 1 });
+    end
+    imgui.Text(tostring(math.max(0, math.floor(gatherToolCost))));
+    imgui.PopStyleColor();
     -- /gathering tools
 
     -- inventory
@@ -5053,6 +5369,10 @@ ashita.events.register('d3d_present', 'yield_render', function()
     imgui.SameLine();
     if uiSmallButton(state.values.btnStartTimer) then
         state.timers[state.gathering] = not state.timers[state.gathering];
+        state.values.toolCountLast = state.values.toolCountLast or {};
+        if state.timers[state.gathering] then
+            state.values.toolCountLast[state.gathering] = tonumber(playerStorage[gatherData.tool]) or 0;
+        end
     end
     if state.timers[state.gathering] then
         state.values.btnStartTimer = "Stop";
@@ -5445,6 +5765,13 @@ ashita.events.register('d3d_present', 'yield_render', function()
                 end
                 -- Reset the metrics..
                 metrics[gather] = table.copy(metricsTemplate);
+                state.values.toolCountLast = state.values.toolCountLast or {};
+                for _, gData in ipairs(gatherTypes) do
+                    if gData.name == gather then
+                        state.values.toolCountLast[gather] = tonumber(playerStorage[gData.tool]) or 0;
+                        break;
+                    end
+                end
                 if state.values ~= nil and state.values.plotHighWater ~= nil then
                     state.values.plotHighWater[string.format('%s:yields', tostring(gather))] = nil;
                     state.values.plotHighWater[string.format('%s:values', tostring(gather))] = nil;
@@ -5895,6 +6222,14 @@ function renderSettingsSetPrices()
         end
         renderSettingsTitleBar("Prices", gathering, btnAction, gatherBtnBoost);
         renderSettingsPageStatusRow();
+        ensureToolPriceSettings();
+        local selectedGatherData = nil;
+        for _, data in ipairs(gatherTypes) do
+            if data.name == gathering then
+                selectedGatherData = data;
+                break;
+            end
+        end
 
         -- Columns
         imgui.SetCursorPosX(0);
@@ -5927,6 +6262,68 @@ function renderSettingsSetPrices()
         -- Outer settings footer is now pinned; no internal reserve needed here.
         if imgui.BeginChild("Scrolling", { -1, 0 }) then
             logScaleSnapshot("settings_prices_list", "");
+
+            local toolVarName = string.format("var_%s_toolPrices", gathering);
+            uiVariables[toolVarName] = uiVariables[toolVarName] or { 0, 0, 0 };
+            local toolData = settings.toolPrices[gathering] or { singlePrice = 0, stackPrice = 0, npcPrice = 0, stackSize = 12 };
+            local tSingle = tonumber(toolData.singlePrice) or 0;
+            local tStack = tonumber(toolData.stackPrice) or 0;
+            local tNpc = tonumber(toolData.npcPrice) or 0;
+            local varSingle, varStack, varNpc = imgui.GetVarValue(uiVariables[toolVarName]);
+            if varSingle == nil or varStack == nil or varNpc == nil then
+                imgui.SetVarValue(uiVariables[toolVarName], tSingle, tStack, tNpc);
+            else
+                tSingle = tonumber(varSingle) or tSingle;
+                tStack = tonumber(varStack) or tStack;
+                tNpc = tonumber(varNpc) or tNpc;
+            end
+
+            local toolLabel = "Tool Cost";
+            if selectedGatherData and selectedGatherData.tool then
+                toolLabel = string.format("Tool Cost (%s)", tostring(selectedGatherData.tool));
+            end
+
+            imgui.Separator();
+            imgui.PushID(string.format("%s::tool_prices", tostring(gathering)));
+            imgui.AlignTextToFramePadding();
+            if imguiShowToolTip("Set tool pricing using the same priority as yields: stack/stackSize, then single, then npc.", settings.general.showToolTips) then
+                imgui.SameLine(0.0, state.window.spaceToolTip);
+            end
+            local totalW = state.window.widthWidgetDefault;
+            local colGap = 4.0;
+            local colW = math.max(48.0, (totalW - (colGap * 2.0)) / 3.0);
+            local stVar = { tStack };
+            local sVar = { tSingle };
+            local nVar = { tNpc };
+            imgui.PushItemWidth(colW);
+            local changedStack = imgui.InputInt("##tool_stack_price", stVar, 0, 0);
+            imgui.SameLine(0.0, colGap);
+            local changedSingle = imgui.InputInt("##tool_single_price", sVar, 0, 0);
+            imgui.SameLine(0.0, colGap);
+            local changedNpc = imgui.InputInt("##tool_npc_price", nVar, 0, 0);
+            imgui.PopItemWidth();
+            imgui.SameLine(0.0, state.window.spaceToolTip);
+            imgui.AlignTextToFramePadding();
+            imgui.TextUnformatted(toolLabel);
+            local s = math.max(0, tonumber(sVar[1]) or 0);
+            local st = math.max(0, tonumber(stVar[1]) or 0);
+            local n = math.max(0, tonumber(nVar[1]) or 0);
+            local changedAny = (changedStack or changedSingle or changedNpc) == true;
+            if changedAny or s ~= tSingle or st ~= tStack or n ~= tNpc then
+                imgui.SetVarValue(uiVariables[toolVarName], s, st, n);
+                settings.toolPrices[gathering] = settings.toolPrices[gathering] or {};
+                settings.toolPrices[gathering].singlePrice = s;
+                settings.toolPrices[gathering].stackPrice = st;
+                settings.toolPrices[gathering].npcPrice = n;
+                settings.toolPrices[gathering].stackSize = tonumber(settings.toolPrices[gathering].stackSize) or 12;
+                writeDebugLog(string.format('setPrices sync tool gather=%s single=%d stack=%d npc=%d changed=%s',
+                    tostring(gathering), tonumber(s) or 0, tonumber(st) or 0, tonumber(n) or 0, tostring(changedAny)));
+                refreshGatherToolCostTotal(gathering);
+            end
+            imgui.PopID();
+            imgui.Separator();
+            imgui.Spacing();
+
             for i, yield in pairs(table.sortKeysByAlphabet(settings.yields[gathering], true)) do
                 local data = settings.yields[gathering][yield];
                  if data.id ~= nil then

@@ -34,8 +34,10 @@ metricsTemplate =
         lost     = 0,
         yields   = 0,
         breaks   = 0,
-        attempts = 0
+        attempts = 0,
+        toolCost = 0
     },
+    toolUnitsUsed = 0,
     secondsPassed  = 0,
     estimatedValue = 0,
     yields         = {},
@@ -98,6 +100,7 @@ stateTemplate =
         clamConfirmedYields  = {},
         clamBucketTotal      = 0,
         clamBucketPz         = 0,
+        toolCountLast        = {},
         centerWindow         = false,
     },
     actions =
@@ -155,6 +158,16 @@ defaultSettingsTemplate =
         firstLoad          = true,
     },
     priceModes = -- 0 - stack price, 1 - single price, 2 - npc price.
+    {
+        harvesting = 0,
+        excavating = 0,
+        logging    = 0,
+        mining     = 0,
+        clamming   = 0,
+        fishing    = 0,
+        digging    = 0
+    },
+    toolPrices =
     {
         harvesting = 0,
         excavating = 0,
