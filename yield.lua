@@ -1142,10 +1142,16 @@ local function calcFooterMetrics()
     return buttonH, symPad, bottomPadTarget, reserve;
 end
 
+local SELECTED_BORDER_COLOR = { 0.28, 0.66, 0.96, 1.0 };
+
+local function getSelectedBorderThickness()
+    return math.max(1.75, (tonumber(state.window.scale) or 1.0) * 1.65);
+end
+
 local function pushSelectedBorderStyle(isSelected)
     if isSelected then
-        imgui.PushStyleVar(ImGuiStyleVar.FrameBorderSize, math.max(1.0, tonumber(state.window.scale) or 1.0));
-        imgui.PushStyleColor(ImGuiCol_Border, { 0.39, 0.96, 0.13, 1.0 });
+        imgui.PushStyleVar(ImGuiStyleVar.FrameBorderSize, getSelectedBorderThickness());
+        imgui.PushStyleColor(ImGuiCol_Border, SELECTED_BORDER_COLOR);
     else
         imgui.PushStyleVar(ImGuiStyleVar.FrameBorderSize, 0.0);
         imgui.PushStyleColor(ImGuiCol_Border, { 0, 0, 0, 0 });
@@ -1597,7 +1603,23 @@ local function estimateWrappedLineCount(text, wrapWidthPx, charWidthPx)
         if len <= 0 then
             lines = lines + 1;
         else
-            lines = lines + math.max(1, math.ceil(len / maxChars));
+            local charEstimate = math.max(1, math.ceil(len / maxChars));
+            local pixelEstimate = 0;
+            if imgui ~= nil and type(imgui.CalcTextSize) == "function" then
+                local ok, size = pcall(function() return imgui.CalcTextSize(rawLine); end);
+                if ok and type(size) == "table" then
+                    local width = tonumber(size.x) or tonumber(size[1]) or 0.0;
+                    if width > 0.0 then
+                        pixelEstimate = math.max(1, math.ceil(width / wrapWidth));
+                    end
+                end
+            end
+            local lineEstimate = math.max(charEstimate, pixelEstimate);
+            -- Over-reserve by one line for wrapped blocks so modal text never clips.
+            if lineEstimate > 1 then
+                lineEstimate = lineEstimate + 1;
+            end
+            lines = lines + lineEstimate;
         end
     end
     return lines;
@@ -2098,6 +2120,14 @@ refreshGatherToolCostTotal = function(gatherType)
     return metrics[gatherName].totals.toolCost;
 end
 
+local function computeWarmupNormalizedHourlyRate(total, elapsedSeconds, warmupWindowSeconds)
+    local totalValue = math.max(0, tonumber(total) or 0);
+    local elapsed = math.max(1, tonumber(elapsedSeconds) or 0);
+    local warmupWindow = math.max(1, tonumber(warmupWindowSeconds) or 1);
+    local effectiveElapsed = math.max(elapsed, warmupWindow);
+    return totalValue * (3600 / effectiveElapsed);
+end
+
 ----------------------------------------------------------------------------------------------------
 -- func: updatePlotPoints
 -- desc: Update the display of all plots every second.
@@ -2115,12 +2145,12 @@ function updatePlotPoints()
         metric.secondsPassed = newSecs;
 
         local pointsWindowMax = 60; -- one minute of rendered points
-        local timeSpan = 3600;
-        local elapsed = math.max(1, tonumber(metric.secondsPassed) or 1);
         local curYields = tonumber(metric.totals and metric.totals.yields) or 0;
         local curValue = tonumber(metric.estimatedValue) or 0;
-        local yieldsOverTime = curYields * (timeSpan / elapsed);
-        local valueOverTime = curValue * (timeSpan / elapsed);
+
+        local elapsed = math.max(1, tonumber(metric.secondsPassed) or 1);
+        local yieldsOverTime = computeWarmupNormalizedHourlyRate(curYields, elapsed, pointsWindowMax);
+        local valueOverTime = computeWarmupNormalizedHourlyRate(curValue, elapsed, pointsWindowMax);
 
         metric.points = metric.points or { yields = { 0 }, values = { 0 } };
         metric.points.yields = metric.points.yields or { 0 };
@@ -3064,8 +3094,19 @@ local function buildSettingsUiFingerprint()
     return table.concat(parts, '|');
 end
 
+local function buildTrackedSettingsSnapshot()
+    return deepCopy({
+        general = settings.general or {},
+        priceModes = settings.priceModes or {},
+        toolPrices = settings.toolPrices or {},
+        yields = settings.yields or {},
+        alertEvents = settings.alertEvents or {},
+    });
+end
+
 local function commitSettingsSnapshot()
     state.values.settingsSnapshot = deepCopy(settings);
+    state.values.settingsTrackedSnapshot = buildTrackedSettingsSnapshot();
     state.values.settingsUiSnapshotFingerprint = buildSettingsUiFingerprint();
 end
 
@@ -3076,11 +3117,14 @@ local function clearTransientSettingsSelections()
 end
 
 local function hasPendingSettingsChanges()
-    local snap = state.values.settingsSnapshot;
+    local snap = state.values.settingsTrackedSnapshot;
     if type(snap) ~= 'table' then
         return true;
     end
-    return not deepEqual(settings, snap);
+    if not deepEqual(buildTrackedSettingsSnapshot(), snap) then
+        return true;
+    end
+    return buildSettingsUiFingerprint() ~= (state.values.settingsUiSnapshotFingerprint or "");
 end
 
 local function applyGeneralDefaults()
@@ -3909,12 +3953,85 @@ ashita.events.register('command', 'yield_command', function(e)
     end
 end);
 
+local ATTEMPT_CLOSE_GRACE_MS = 550;
+
+local function beginAttemptContext(source, gatherName)
+    state.values.attemptIdCounter = (tonumber(state.values.attemptIdCounter) or 0) + 1;
+    state.values.activeAttemptId = state.values.attemptIdCounter;
+    state.values.activeAttemptGather = tostring(gatherName or state.gathering or "");
+    state.values.activeAttemptStartedAt = os.clock();
+    state.values.activeAttemptLastEventAt = state.values.activeAttemptStartedAt;
+    state.values.activeAttemptCounted = false;
+    state.values.activeAttemptSeenMessages = {};
+    state.values.attemptCloseSeq = (tonumber(state.values.attemptCloseSeq) or 0) + 1;
+    writeDebugLog(string.format('attempt begin id=%s gather=%s source=%s',
+        tostring(state.values.activeAttemptId), tostring(state.values.activeAttemptGather), tostring(source or "")));
+end
+
+local function clearAttemptContext(reason)
+    if not state.attempting and state.values.activeAttemptId == nil then
+        return;
+    end
+    local prevId = state.values.activeAttemptId;
+    local prevGather = state.values.activeAttemptGather;
+    state.values.attemptCloseSeq = (tonumber(state.values.attemptCloseSeq) or 0) + 1;
+    state.values.activeAttemptId = nil;
+    state.values.activeAttemptGather = nil;
+    state.values.activeAttemptStartedAt = nil;
+    state.values.activeAttemptLastEventAt = nil;
+    state.values.activeAttemptCounted = false;
+    state.values.activeAttemptSeenMessages = nil;
+    state.attempting = false;
+    writeDebugLog(string.format('attempt close id=%s gather=%s reason=%s',
+        tostring(prevId), tostring(prevGather), tostring(reason or "")));
+end
+
+local function scheduleAttemptClose(reason, delayMs)
+    if not state.attempting then
+        return;
+    end
+    local seq = (tonumber(state.values.attemptCloseSeq) or 0) + 1;
+    state.values.attemptCloseSeq = seq;
+    state.values.activeAttemptLastEventAt = os.clock();
+    local attemptId = state.values.activeAttemptId;
+    local gatherSnapshot = state.gathering;
+    local delay = tonumber(delayMs) or ATTEMPT_CLOSE_GRACE_MS;
+    if delay < 0 then delay = 0; end
+    ashita.timer.once(delay, function()
+        if (tonumber(state.values.attemptCloseSeq) or 0) ~= seq then
+            return;
+        end
+        if not state.attempting then
+            return;
+        end
+        if attemptId ~= nil and state.values.activeAttemptId ~= attemptId then
+            return;
+        end
+        clearAttemptContext(string.format('%s gather=%s', tostring(reason or "deferred"), tostring(gatherSnapshot)));
+    end);
+end
+
+local function countAttemptOnce(reason)
+    if state.values.activeAttemptId == nil then
+        adjTotal("attempts", 1);
+        return true;
+    end
+    if state.values.activeAttemptCounted == true then
+        return false;
+    end
+    adjTotal("attempts", 1);
+    state.values.activeAttemptCounted = true;
+    writeDebugLog(string.format('attempt counted id=%s gather=%s reason=%s',
+        tostring(state.values.activeAttemptId), tostring(state.values.activeAttemptGather), tostring(reason or "")));
+    return true;
+end
+
 ---------------------------------------------------------------------------------------------------
 -- func: incoming_text
 -- desc: Event called when the addon is asked to handle an incoming chat line.
 ---------------------------------------------------------------------------------------------------
 ashita.events.register('text_in', 'yield_text_in', function(e)
-    if (e.blocked) then state.attempting = false; return; end
+    if (e.blocked) then clearAttemptContext('text_blocked'); return; end
 
     -- Keep filtering while idle, but do not drop active gather attempts on non-standard server modes.
     local mode = bit.band(e.mode or 0, 0x000000FF);
@@ -3926,28 +4043,33 @@ ashita.events.register('text_in', 'yield_text_in', function(e)
     -- Remove colors form message..
     local message = string.strip_colors(e.message);
     message = string.lower(message);
+    message = string.gsub(message, "^%[%d%d:%d%d:%d%d%]%s*", "");
+    local playerName = string.lower(tostring(getPlayerName(true) or ""));
+    local fishingSkillup = string.contains(message, string.format("%s's fishing skill rises", playerName))
+        or string.contains(message, "your fishing skill rises");
+    local diggingSkillup = string.contains(message, string.format("%s's digging skill rises", playerName))
+        or string.contains(message, "your digging skill rises")
+        or string.contains(message, "digging skill rises");
+    if fishingSkillup then
+        playAlert(imgui.GetVarValue(uiVariables["var_FishingSkillSoundFile"]));
+    end
+    if diggingSkillup then
+        playAlert(imgui.GetVarValue(uiVariables["var_DiggingSkillSoundFile"]));
+    end
     if state.attempting then
-        writeDebugLog(string.format('text_in attempting=true mode=%s gather=%s message=%s', tostring(e.mode), tostring(state.gathering), tostring(message)));
+        state.values.activeAttemptSeenMessages = state.values.activeAttemptSeenMessages or {};
+        if state.values.activeAttemptSeenMessages[message] == true then
+            writeDebugLog(string.format('text_in dedupe attemptId=%s mode=%s gather=%s message=%s',
+                tostring(state.values.activeAttemptId), tostring(e.mode), tostring(state.gathering), tostring(message)));
+            return;
+        end
+        state.values.activeAttemptSeenMessages[message] = true;
+        writeDebugLog(string.format('text_in attempting=true attemptId=%s mode=%s gather=%s message=%s',
+            tostring(state.values.activeAttemptId), tostring(e.mode), tostring(state.gathering), tostring(message)));
     end
 
     -- Ensure we care..
     if not state.attempting then
-        local playerName = string.lower(tostring(getPlayerName(true) or ""));
-        if state.values.lastKnownGathering == "fishing" then -- play alert on skill-up
-            local skillup = string.contains(message, string.format("%s's fishing skill rises", playerName))
-                or string.contains(message, "your fishing skill rises");
-            if skillup then
-                playAlert(imgui.GetVarValue(uiVariables["var_FishingSkillSoundFile"]));
-            end
-        end
-        if state.values.lastKnownGathering == "digging" then -- play alert on skill-up
-            local skillup = string.contains(message, string.format("%s's digging skill rises", playerName))
-                or string.contains(message, "your digging skill rises")
-                or string.contains(message, "digging skill rises");
-            if skillup then
-                playAlert(imgui.GetVarValue(uiVariables["var_DiggingSkillSoundFile"]));
-            end
-        end
         if getPlayerZoneId() == 4 then -- Bibiki Bay
             local obtainedBucket = string.contains(message, "obtained key item: clamming kit");
             local returnedBucket = string.contains(message, "you return the clamming kit");
@@ -3992,7 +4114,7 @@ ashita.events.register('text_in', 'yield_text_in', function(e)
         local gatherData = getGatherTypeData(state.gathering);
         if gatherData == nil then
             writeDebugLog(string.format('ERROR missing gatherData for state.gathering=%s attemptType=%s', tostring(state.gathering), tostring(state.attemptType)));
-            state.attempting = false;
+            clearAttemptContext('missing_gatherData');
             return;
         end
         if gatherData.name == "digging" then
@@ -4109,7 +4231,7 @@ ashita.events.register('text_in', 'yield_text_in', function(e)
             if resolvedSuccess == nil then
                 writeDebugLog(string.format('unknown_yield gather=%s parsed=%s', tostring(state.gathering), tostring(success)));
                 displayResponse(string.format("Yield: The %s yield name (%s) is unrecognized! Please report this to LoTekkie.", state.gathering, success), "\31\167%s");
-                state.attempting = false;
+                scheduleAttemptClose('unknown_yield', ATTEMPT_CLOSE_GRACE_MS);
                 return false;
             end
             success = resolvedSuccess;
@@ -4157,10 +4279,10 @@ ashita.events.register('text_in', 'yield_text_in', function(e)
             adjTotal("lost", 1);
         end
         if success or unable or broken or full or lost then
-            adjTotal("attempts", 1);
+            countAttemptOnce('text_terminal');
             recordCurrentZone();
             state.values.lastKnownGathering = state.gathering;
-            state.attempting = false;
+            scheduleAttemptClose('text_terminal', ATTEMPT_CLOSE_GRACE_MS);
         end
         local curVal = metrics[state.gathering].estimatedValue;
         metrics[state.gathering].estimatedValue = curVal + val;
@@ -4175,7 +4297,7 @@ ashita.events.register('text_in', 'yield_text_in', function(e)
         if not ok then
             writeDebugLog(string.format('ERROR text_in gather attempt: %s', tostring(err)));
             writeDebugLog(debug.traceback());
-            state.attempting = false;
+            clearAttemptContext('text_parse_error');
         end
     end
 end);
@@ -4197,12 +4319,14 @@ ashita.events.register('packet_out', 'yield_packet_out', function(e)
                 state.attempting = true;
                 state.attemptType = data.name;
                 state.gathering = data.name;
+                beginAttemptContext('packet_out_helm', data.name);
+                scheduleAttemptClose('attempt_timeout', 2500);
                 matched = true;
                 break;
             end
         end
         if not matched then
-            state.attempting = false;
+            clearAttemptContext('packet_out_helm_unmatched');
         end
         writeDebugLog(string.format('packet_out_helm matched=%s gather=%s', tostring(matched), tostring(state.gathering)));
     elseif e.id == 0x01A then -- clam
@@ -4211,12 +4335,16 @@ ashita.events.register('packet_out', 'yield_packet_out', function(e)
             state.attempting = true;
             state.attemptType = "clamming";
             state.gathering = "clamming";
+            beginAttemptContext('packet_out_01A_clam', 'clamming');
+            scheduleAttemptClose('attempt_timeout', 2500);
         elseif struct.unpack("H", e.data, 0x0A + 1) == 0x1104 then -- digging
             state.attempting = true;
             state.attemptType = "digging";
             state.gathering = "digging";
+            beginAttemptContext('packet_out_01A_digging', 'digging');
+            scheduleAttemptClose('attempt_timeout', 2500);
         else
-            state.attempting = false;
+            clearAttemptContext('packet_out_01A_unmatched');
         end
         writeDebugLog(string.format('packet_out_01A attempting=%s attemptType=%s gather=%s', tostring(state.attempting), tostring(state.attemptType), tostring(state.gathering)));
     elseif e.id == 0x110 then -- fishing
@@ -4225,8 +4353,10 @@ ashita.events.register('packet_out', 'yield_packet_out', function(e)
             state.attempting = true;
             state.attemptType = "fishing";
             state.gathering = "fishing";
+            beginAttemptContext('packet_out_fishing', 'fishing');
+            scheduleAttemptClose('attempt_timeout', 4000);
         else
-            state.attempting = false
+            clearAttemptContext('packet_out_fishing_cancel');
         end
         writeDebugLog(string.format('packet_out_fishing action=%s attempting=%s', tostring(action), tostring(state.attempting)));
     end
@@ -4238,7 +4368,7 @@ end);
 ----------------------------------------------------------------------------------------------------
 ashita.events.register('packet_in', 'yield_packet_in', function(e)
     if e.id == 0x00B then -- zoning out (11)
-        state.attempting = false;
+        clearAttemptContext('packet_in_zone_out');
         state.values.zoning = true;
         state.values.preZoneCounts["available"] = playerStorage['available'];
         state.values.preZoneCounts["available_pct"] = playerStorage["available_pct"];
@@ -4296,6 +4426,7 @@ local SettingsWindow =
         imgui.SetVarValue(uiVariables['var_ReportSelected'], 0);
         state.values.currentReportName = nil;
         state.values.settingsSnapshot = nil;
+        state.values.settingsTrackedSnapshot = nil;
     end,
 
     modalCancelAction = function (self, alreadyClosed, keepSnapshot)
@@ -4311,6 +4442,7 @@ local SettingsWindow =
             commitSettingsSnapshot();
         else
             state.values.settingsSnapshot = nil;
+            state.values.settingsTrackedSnapshot = nil;
             state.values.settingsUiSnapshotFingerprint = nil;
         end
         if not alreadyClosed then
@@ -4504,6 +4636,7 @@ local SettingsWindow =
                         end
                     end
                     state.values.settingsSnapshot = nil;
+                    state.values.settingsTrackedSnapshot = nil;
                     state.values.settingsUiSnapshotFingerprint = nil;
                     imgui.SetVarValue(uiVariables["var_SettingsVisible"], false);
                 end
@@ -4999,6 +5132,8 @@ ashita.events.register('d3d_present', 'yield_render', function()
     local buttonTextScale = math.max(0.25, settings.general.buttonTextScaleBase + ((windowScale - 1.0) * settings.general.buttonTextScaleFactor));
     local buttonSizeXScale = math.max(0.25, settings.general.buttonSizeXBase + ((windowScale - 1.0) * settings.general.buttonSizeXFactor));
     local buttonSizeYScale = math.max(0.25, settings.general.buttonSizeYBase + ((windowScale - 1.0) * settings.general.buttonSizeYFactor));
+    local headerBarBase = math.max(sy(16.0), (defaultFontSize * textScale) + sy(4.0));
+    local headerCostBar = math.max(7.0, headerBarBase * 0.62);
     state.window = -- Calculations based on scaled window sizes
     {
         scale                 = windowScale,
@@ -5015,8 +5150,10 @@ ashita.events.register('d3d_present', 'yield_render', function()
         padY                  = sy(5.0),
         spaceGatherBtn        = sx(7.0),
         spaceGatherImg        = sx(7.0),
-        -- Ensure progress bar height tracks text size so label does not look oversized.
-        heightHeaderMain      = math.max(sy(18.0), (defaultFontSize * textScale) + sy(6.0)),
+        -- Header uses two stacked bars (target progress + smaller tool-cost ratio).
+        heightHeaderBar       = headerBarBase,
+        heightHeaderCostBar   = headerCostBar,
+        heightHeaderMain      = headerBarBase + headerCostBar + sy(3.0),
         heightPlot            = sy(25.0),
         heightYields          = sy(130.0),
         spaceToolTip          = sx(4.0),
@@ -5149,13 +5286,7 @@ ashita.events.register('d3d_present', 'yield_render', function()
         imgui.SetCursorPosX(navPositions[i] or rowStartX);
         imgui.SetCursorPosY(rowStartY);
         local isSelected = (data.name == state.gathering);
-        if isSelected then
-            imgui.PushStyleVar(ImGuiStyleVar.FrameBorderSize, math.max(1.0, tonumber(state.window.scale) or 1.0));
-            imgui.PushStyleColor(ImGuiCol_Border, { 0.39, 0.96, 0.13, 1.0 });
-        else
-            imgui.PushStyleVar(ImGuiStyleVar.FrameBorderSize, 0.0);
-            imgui.PushStyleColor(ImGuiCol_Border, { 0, 0, 0, 0 });
-        end
+        pushSelectedBorderStyle(isSelected);
         if state.values.btnTextureFailure or not settings.general.useImageButtons then
             imguiPushActiveBtnColor(isSelected);
             if uiSmallButtonBoosted(string.upperfirst(data.short), gatherBtnBoost) then
@@ -5187,7 +5318,7 @@ ashita.events.register('d3d_present', 'yield_render', function()
     imguiHalfSep();
 
     -- MAIN_HEADER
-    if imguiShowToolTip(string.format("Progress towards your target value (adjusted within settings)."), settings.general.showToolTips) then
+    if imguiShowToolTip(string.format("Top bar: target progress. Bottom bar: Tool Cost vs Estimated Value ratio."), settings.general.showToolTips) then
         imgui.SameLine(0.0, state.window.spaceToolTip);
     end
     if imgui.BeginChild("Header", { -1, state.window.heightHeaderMain }, false, bit.bor(ImGuiWindowFlags.NoScrollbar, ImGuiWindowFlags.NoScrollWithMouse)) then
@@ -5202,129 +5333,231 @@ ashita.events.register('d3d_present', 'yield_render', function()
             local correction = desiredHeaderFontPx / actualHeaderFontPx;
             setWindowFontScale((tonumber(state.window.currentTextScale) or desiredHeaderScale) * correction);
         end
+        local function renderToggleProgressBar(opts)
+            local keyPrefix = tostring(opts.keyPrefix or "bar");
+            local barValue = tonumber(opts.value) or 0.0;
+            if barValue < 0 then barValue = 0.0; end
+            if barValue > 1 then barValue = 1.0; end
+            local baseScale = tonumber(state.window.currentTextScale) or tonumber(state.window.textScale) or 1.0;
+            local labelScaleMul = tonumber(opts.labelScaleMul) or 1.0;
+            if labelScaleMul < 0.5 then labelScaleMul = 0.5; end
+            if labelScaleMul > 1.5 then labelScaleMul = 1.5; end
+            local barHeight = math.max(8.0, tonumber(opts.height) or tonumber(state.window.heightHeaderBar) or 14.0);
+            local label = tostring(opts.label or "");
+            local labelColor = opts.labelColor or { 0.77, 0.83, 0.80, 1.0 };
+            local fillColor = opts.fillColor;
+            local bgColor = opts.bgColor;
+
+            local availW = imgui.GetContentRegionAvail();
+            local barWidth = tonumber(availW) or 0.0;
+            if type(availW) == "table" and availW.x ~= nil then
+                barWidth = tonumber(availW.x) or barWidth;
+            end
+            if barWidth <= 0 then
+                barWidth = imgui.GetWindowWidth() - ((state.window.padX or 5) * 2);
+            end
+            local barPosX = imgui.GetCursorPosX();
+            local barPosY = imgui.GetCursorPosY();
+
+            local adjustedLabelScale = baseScale * labelScaleMul;
+            if opts.fitLabelToBar == true and #label > 0 then
+                local desiredTextH = math.max(6.0, barHeight - 2.0);
+                local curTextH = tonumber(imgui.GetTextLineHeight()) or 0.0;
+                local hScale = 1.0;
+                if curTextH > 0.0 then
+                    hScale = desiredTextH / curTextH;
+                end
+                local wScale = 1.0;
+                if imgui.CalcTextSize ~= nil then
+                    local okSize, sz = pcall(function() return imgui.CalcTextSize(label); end);
+                    if okSize and type(sz) == "table" then
+                        local tw = tonumber(sz.x or sz[1]) or 0.0;
+                        local maxTextW = math.max(10.0, barWidth - 6.0);
+                        if tw > 0.0 then
+                            wScale = maxTextW / tw;
+                        end
+                    end
+                end
+                local fitMul = math.min(1.0, hScale, wScale);
+                adjustedLabelScale = adjustedLabelScale * fitMul;
+            end
+            if adjustedLabelScale < (baseScale * 0.72) then
+                adjustedLabelScale = baseScale * 0.72;
+            end
+            local applyAdjustedScale = math.abs(adjustedLabelScale - baseScale) > 0.0001;
+            if applyAdjustedScale then
+                setWindowFontScale(adjustedLabelScale);
+            end
+
+            local pushed = 0;
+            if fillColor ~= nil then
+                imgui.PushStyleColor(ImGuiCol.PlotHistogram, fillColor);
+                pushed = pushed + 1;
+            end
+            if bgColor ~= nil then
+                imgui.PushStyleColor(ImGuiCol.FrameBg, bgColor);
+                pushed = pushed + 1;
+            end
+            imgui.PushStyleColor(ImGuiCol_Text, { 0, 0, 0, 0 });
+            imgui.ProgressBar(barValue, { -1, barHeight }, "");
+            local hovered = (imgui.IsItemHovered ~= nil and imgui.IsItemHovered() == true);
+            imgui.PopStyleColor();
+            if pushed > 0 then
+                imgui.PopStyleColor(pushed);
+            end
+
+            local textWidth = (#label * imgui.GetFontSize() * 0.52);
+            if imgui.CalcTextSize ~= nil then
+                local okSize, sz = pcall(function() return imgui.CalcTextSize(label); end);
+                if okSize and type(sz) == "table" then
+                    if sz.x ~= nil then
+                        textWidth = tonumber(sz.x) or textWidth;
+                    elseif sz[1] ~= nil then
+                        textWidth = tonumber(sz[1]) or textWidth;
+                    end
+                end
+            end
+            local overlayX = barPosX + math.max(0.0, (barWidth - textWidth) / 2.0);
+            local overlayY = barPosY + math.max(0.0, (barHeight - imgui.GetTextLineHeight()) / 2.0);
+            imgui.SetCursorPosX(overlayX);
+            imgui.SetCursorPosY(overlayY);
+            imgui.PushStyleColor(ImGuiCol_Text, labelColor);
+            imgui.TextUnformatted(label);
+            imgui.PopStyleColor();
+
+            local armLKey = keyPrefix .. "ArmL";
+            local armRKey = keyPrefix .. "ArmR";
+            local mouseLPrevKey = keyPrefix .. "MouseLPrev";
+            local mouseRPrevKey = keyPrefix .. "MouseRPrev";
+            state.values[armLKey] = state.values[armLKey] or false;
+            state.values[armRKey] = state.values[armRKey] or false;
+            state.values[mouseLPrevKey] = state.values[mouseLPrevKey] or false;
+            state.values[mouseRPrevKey] = state.values[mouseRPrevKey] or false;
+
+            local lDown = false;
+            local rDown = false;
+            local lReleased = false;
+            local rReleased = false;
+            local okDownL, downL = pcall(function() return imgui.IsMouseDown(0); end);
+            if okDownL then lDown = (downL == true); end
+            local okDownR, downR = pcall(function() return imgui.IsMouseDown(1); end);
+            if okDownR then rDown = (downR == true); end
+            local okRelL, relL = pcall(function() return imgui.IsMouseReleased(0); end);
+            if okRelL then
+                lReleased = (relL == true);
+            else
+                lReleased = (state.values[mouseLPrevKey] == true and lDown == false);
+            end
+            local okRelR, relR = pcall(function() return imgui.IsMouseReleased(1); end);
+            if okRelR then
+                rReleased = (relR == true);
+            else
+                rReleased = (state.values[mouseRPrevKey] == true and rDown == false);
+            end
+
+            if hovered and lDown then
+                state.values[armLKey] = true;
+            end
+            if hovered and rDown then
+                state.values[armRKey] = true;
+            end
+
+            local labelIndexKey = tostring(opts.labelIndexKey or "");
+            local labelIndex = tonumber(state.values[labelIndexKey]) or 1;
+            if lReleased then
+                if state.values[armLKey] and hovered then
+                    state.values[labelIndexKey] = cycleIndex(labelIndex, 1, 2);
+                end
+                state.values[armLKey] = false;
+            end
+            if rReleased then
+                if state.values[armRKey] and hovered then
+                    state.values[labelIndexKey] = cycleIndex(labelIndex, 1, 2, -1);
+                end
+                state.values[armRKey] = false;
+            end
+
+            state.values[mouseLPrevKey] = lDown;
+            state.values[mouseRPrevKey] = rDown;
+
+            if settings.general.showToolTips and hovered and opts.tooltip ~= nil then
+                imgui.SetTooltip(tostring(opts.tooltip));
+            end
+
+            if applyAdjustedScale then
+                setWindowFontScale(baseScale);
+            end
+            return barPosX, barPosY, barWidth, barHeight, hovered;
+        end
+
+        local headerStartX = imgui.GetCursorPosX();
+        local barHeight = math.max(8.0, tonumber(state.window.heightHeaderBar) or 14.0);
+        local costBarHeight = math.max(7.0, tonumber(state.window.heightHeaderCostBar) or (barHeight * 0.62));
+        local barGap = math.max(1.0, sy(2.0));
+
         local progress = calcTargetProgress();
         local targetValue = tonumber(settings.general.targetValue) or 0;
         local curValue = tonumber(metrics[state.gathering].estimatedValue) or 0;
         local progressPct = math.floor((progress * 100.0) + 0.5);
         local progressLabelIndex = tonumber(state.values.progressLabelIndex) or 1;
-        local progressLabel;
-        if progressLabelIndex == 2 then
-            progressLabel = string.format("%d%%", progressPct);
-        else
-            progressLabel = string.format("%s/%s", curValue, targetValue);
+        local progressLabel = (progressLabelIndex == 2)
+            and string.format("%d%%", progressPct)
+            or string.format("%s/%s", curValue, targetValue);
+        local lr, lg, lb, la = 0.39, 0.96, 0.13, 1.0;
+        if progress < 1 and progress >= 0.5 then
+            lr, lg, lb, la = 1, 1, 0.54, 1;
+        elseif progress < 0.5 then
+            lr, lg, lb, la = 1, 0.615, 0.615, 1;
         end
+        local _, firstY = renderToggleProgressBar({
+            keyPrefix = "progress",
+            labelIndexKey = "progressLabelIndex",
+            value = progress,
+            label = progressLabel,
+            labelColor = { lr, lg, lb, la },
+            height = barHeight,
+            tooltip = "Progress to target value. Click to toggle label (value/target or %).",
+        });
         logScaleSnapshot("main_header_progress", string.format("label_mode=%s", tostring(progressLabelIndex)));
 
-        local lr, lg, lb, la = 0.39, 0.96, 0.13, 1; -- success
-        if progress < 1 and progress >= 0.5 then
-            lr, lg, lb, la = 1, 1, 0.54, 1; -- warn
-        elseif progress < 0.5 then
-            lr, lg, lb, la = 1, 0.615, 0.615, 1; -- danger
-        end
-        local availW = imgui.GetContentRegionAvail();
-        local barWidth = tonumber(availW) or 0;
-        if type(availW) == "table" and availW.x ~= nil then
-            barWidth = tonumber(availW.x) or barWidth;
-        end
-        if barWidth <= 0 then
-            barWidth = imgui.GetWindowWidth() - ((state.window.padX or 5) * 2);
-        end
-        local barPosX = imgui.GetCursorPosX();
-        local barPosY = imgui.GetCursorPosY();
-        -- Hide built-in progress label and render centered text manually.
-        imgui.PushStyleColor(ImGuiCol_Text, { 0, 0, 0, 0 });
-        imgui.ProgressBar(progress, { -1, state.window.heightHeaderMain }, "");
-        local progressHovered = (imgui.IsItemHovered ~= nil and imgui.IsItemHovered() == true);
-        imgui.PopStyleColor();
-        local textWidth = (#progressLabel * imgui.GetFontSize() * 0.52);
-        if imgui.CalcTextSize ~= nil then
-            local okSize, sz = pcall(function() return imgui.CalcTextSize(progressLabel); end);
-            if okSize and type(sz) == "table" then
-                if sz.x ~= nil then
-                    textWidth = tonumber(sz.x) or textWidth;
-                elseif sz[1] ~= nil then
-                    textWidth = tonumber(sz[1]) or textWidth;
-                end
-            end
-        end
-        local overlayX = barPosX + math.max(0, (barWidth - textWidth) / 2);
-        local overlayY = barPosY + math.max(0, (state.window.heightHeaderMain - imgui.GetTextLineHeight()) / 2);
-        imgui.SetCursorPosX(overlayX);
-        imgui.SetCursorPosY(overlayY);
-        imgui.PushStyleColor(ImGuiCol_Text, { lr, lg, lb, la });
-        imgui.TextUnformatted(progressLabel);
-        imgui.PopStyleColor();
-        -- Use the progress bar item itself as the interaction surface.
-        local hovered = progressHovered;
-        if state.values.progressHoverLast == nil then
-            state.values.progressHoverLast = false;
-        end
-        if hovered ~= state.values.progressHoverLast then
-            state.values.progressHoverLast = hovered;
-            writeDebugLog(string.format('progress hover changed: hovered=%s width=%s height=%s', tostring(hovered), tostring(barWidth), tostring(state.window.heightHeaderMain)));
-        end
-        state.values.progressArmL = state.values.progressArmL or false;
-        state.values.progressArmR = state.values.progressArmR or false;
-        state.values.progressMouseLPrev = state.values.progressMouseLPrev or false;
-        state.values.progressMouseRPrev = state.values.progressMouseRPrev or false;
+        imgui.SetCursorPosX(headerStartX);
+        imgui.SetCursorPosY(firstY + barHeight + barGap);
 
-        local lDown = false;
-        local rDown = false;
-        local lReleased = false;
-        local rReleased = false;
-
-        local okDownL, downL = pcall(function() return imgui.IsMouseDown(0); end);
-        if okDownL then lDown = (downL == true); end
-        local okDownR, downR = pcall(function() return imgui.IsMouseDown(1); end);
-        if okDownR then rDown = (downR == true); end
-
-        local okRelL, relL = pcall(function() return imgui.IsMouseReleased(0); end);
-        if okRelL then
-            lReleased = (relL == true);
-        else
-            lReleased = (state.values.progressMouseLPrev == true and lDown == false);
+        local toolCost = tonumber(metrics[state.gathering].totals.toolCost) or 0;
+        local totalValue = tonumber(metrics[state.gathering].estimatedValue) or 0;
+        local ratioRaw = 0.0;
+        if totalValue > 0 then
+            ratioRaw = toolCost / totalValue;
+        elseif toolCost > 0 then
+            ratioRaw = 1.0;
         end
-        local okRelR, relR = pcall(function() return imgui.IsMouseReleased(1); end);
-        if okRelR then
-            rReleased = (relR == true);
-        else
-            rReleased = (state.values.progressMouseRPrev == true and rDown == false);
+        if ratioRaw < 0 then ratioRaw = 0.0; end
+        local ratioBar = ratioRaw;
+        if ratioBar > 1.0 then ratioBar = 1.0; end
+        local ratioPct = math.floor((ratioRaw * 100.0) + 0.5);
+        local costRatioLabelIndex = tonumber(state.values.costRatioLabelIndex) or 1;
+        local costRatioLabel = (costRatioLabelIndex == 2)
+            and string.format("%d%%", ratioPct)
+            or string.format("%s/%s", toolCost, totalValue);
+        local cr, cg, cb, ca = 1.0, 0.92, 0.92, 1.0;
+        if ratioRaw <= 0.25 then
+            cr, cg, cb, ca = 0.86, 0.91, 0.95, 1.0;
+        elseif ratioRaw <= 0.50 then
+            cr, cg, cb, ca = 1.0, 0.96, 0.72, 1.0;
         end
-
-        if hovered and lDown then
-            if not state.values.progressArmL then
-                state.values.progressArmL = true;
-                writeDebugLog('progress arm L');
-            end
-        end
-        if hovered and rDown then
-            if not state.values.progressArmR then
-                state.values.progressArmR = true;
-                writeDebugLog('progress arm R');
-            end
-        end
-
-        if lReleased then
-            if state.values.progressArmL and hovered then
-                state.values.progressLabelIndex = cycleIndex(progressLabelIndex, 1, 2);
-                writeDebugLog(string.format('progress toggle release L: index=%s', tostring(state.values.progressLabelIndex)));
-            end
-            state.values.progressArmL = false;
-        end
-        if rReleased then
-            if state.values.progressArmR and hovered then
-                state.values.progressLabelIndex = cycleIndex(progressLabelIndex, 1, 2, -1);
-                writeDebugLog(string.format('progress toggle release R: index=%s', tostring(state.values.progressLabelIndex)));
-            end
-            state.values.progressArmR = false;
-        end
-
-        state.values.progressMouseLPrev = lDown;
-        state.values.progressMouseRPrev = rDown;
-
-        if settings.general.showToolTips and hovered then
-            imgui.SetTooltip("Progress to target value. Click to toggle label (value/target or %).");
-        end
+        renderToggleProgressBar({
+            keyPrefix = "costRatio",
+            labelIndexKey = "costRatioLabelIndex",
+            value = ratioBar,
+            label = costRatioLabel,
+            labelColor = { cr, cg, cb, ca },
+            fillColor = { 0.70, 0.18, 0.18, 1.0 },
+            bgColor = { 0.20, 0.23, 0.26, 1.0 },
+            height = costBarHeight,
+            labelScaleMul = 0.95,
+            fitLabelToBar = true,
+            tooltip = "Tool Cost compared to Estimated Value. Click to toggle label (cost/value or %).",
+        });
         imgui.EndChild();
     end
     -- /MAIN_HEADER
@@ -5520,6 +5753,9 @@ ashita.events.register('d3d_present', 'yield_render', function()
     if uiSmallButton("Clear") then
         state.timers[state.gathering] = false;
         metrics[state.gathering].secondsPassed = 0;
+        state.values.plotHighWater = state.values.plotHighWater or {};
+        state.values.plotHighWater[string.format('%s:yields', tostring(state.gathering))] = nil;
+        state.values.plotHighWater[string.format('%s:values', tostring(state.gathering))] = nil;
     end
     -- /timer
 
@@ -5555,6 +5791,30 @@ ashita.events.register('d3d_present', 'yield_render', function()
     -- plot yields
     imgui.PushItemWidth(-1);
     local plotYields = metrics[state.gathering].points.yields;
+    local function drawCenteredPlotOverlay(plotX, plotY, plotW, plotH, text, color)
+        local label = tostring(text or "");
+        if label == "" then
+            return;
+        end
+        local overlayW = (#label * imgui.GetFontSize() * 0.52);
+        if imgui.CalcTextSize ~= nil then
+            local okSize, sz = pcall(function() return imgui.CalcTextSize(label); end);
+            if okSize and type(sz) == "table" then
+                overlayW = tonumber(sz.x or sz[1]) or overlayW;
+            end
+        end
+        local afterX = imgui.GetCursorPosX();
+        local afterY = imgui.GetCursorPosY();
+        local overlayX = plotX + math.max(0.0, (plotW - overlayW) / 2.0);
+        local overlayY = plotY + math.max(0.0, (plotH - imgui.GetTextLineHeight()) / 2.0);
+        imgui.SetCursorPosX(overlayX);
+        imgui.SetCursorPosY(overlayY);
+        imgui.PushStyleColor(ImGuiCol_Text, color or { 0.77, 0.83, 0.80, 1.0 });
+        imgui.TextUnformatted(label);
+        imgui.PopStyleColor();
+        imgui.SetCursorPosX(afterX);
+        imgui.SetCursorPosY(afterY);
+    end
     local yieldsLabelMap =
     {
         [1] = string.format("Yields/HR (%.2f)", metrics[state.gathering].points.yields[#metrics[state.gathering].points.yields]),
@@ -5580,16 +5840,30 @@ ashita.events.register('d3d_present', 'yield_render', function()
         imgui.PushStyleColor(ImGuiCol_Text, { 0.39, 0.96, 0.13, 1 }); -- success
     end
     imgui.PushStyleColor(ImGuiCol.PlotHistogramHovered, { 0.77, 0.83, 0.80, 0.3 });
-
-    imgui.PlotHistogram("", plotYields, #plotYields, 0, plotYieldsLabel, yieldsPlotMin, yieldsPlotMax, { 0.0, state.window.heightPlot });
+    local yieldsPlotColor = nil;
+    if yieldsPerHour < targetYields and yieldsPerHour >= targetYields/2 then
+        yieldsPlotColor = { 1, 1, 0.54, 1 };
+    elseif yieldsPerHour < targetYields/2 then
+        yieldsPlotColor = { 1, 0.615, 0.615, 1 };
+    else
+        yieldsPlotColor = { 0.39, 0.96, 0.13, 1 };
+    end
+    local yieldsPlotX = imgui.GetCursorPosX();
+    local yieldsPlotY = imgui.GetCursorPosY();
+    local yieldsPlotW = getAvailX(imgui.GetContentRegionAvail());
+    imgui.PlotHistogram("", plotYields, #plotYields, 0, "", yieldsPlotMin, yieldsPlotMax, { 0.0, state.window.heightPlot });
+    local yieldsPlotClicked = imgui.IsItemClicked();
+    local yieldsPlotRightClicked = imgui.IsItemClicked(1);
+    local yieldsPlotHovered = imgui.IsItemHovered();
+    drawCenteredPlotOverlay(yieldsPlotX, yieldsPlotY, yieldsPlotW, state.window.heightPlot, plotYieldsLabel, yieldsPlotColor);
     imgui.PopStyleColor(2)
-    if imgui.IsItemClicked() then
+    if yieldsPlotClicked then
         state.values.yieldsLabelIndex = cycleIndex(state.values.yieldsLabelIndex, 1, 3);
     end
-    if imgui.IsItemClicked(1) then
+    if yieldsPlotRightClicked then
         state.values.yieldsLabelIndex = cycleIndex(state.values.yieldsLabelIndex, 1, 3, -1);
     end
-    if imgui.IsItemHovered() then
+    if yieldsPlotHovered then
         imgui.SetTooltip(string.format(
             "Yields/HR trend\nCurrent: %.2f\nRange: 0 to session high-water\nL/R click: cycle label format",
             yieldsPerHour
@@ -5621,16 +5895,30 @@ ashita.events.register('d3d_present', 'yield_render', function()
     else
         imgui.PushStyleColor(ImGuiCol_Text, { 0.39, 0.96, 0.13, 1 }); -- success
     end
-
-    imgui.PlotLines("", plotValues, #plotValues, 0, plotValuesLabel, valuesPlotMin, valuesPlotMax, { 0.0, state.window.heightPlot });
+    local valuesPlotColor = nil;
+    if valuesPerHour < targetValue and valuesPerHour >= targetValue/2 then
+        valuesPlotColor = { 1, 1, 0.54, 1 };
+    elseif valuesPerHour < targetValue/2 then
+        valuesPlotColor = { 1, 0.615, 0.615, 1 };
+    else
+        valuesPlotColor = { 0.39, 0.96, 0.13, 1 };
+    end
+    local valuesPlotX = imgui.GetCursorPosX();
+    local valuesPlotY = imgui.GetCursorPosY();
+    local valuesPlotW = getAvailX(imgui.GetContentRegionAvail());
+    imgui.PlotLines("", plotValues, #plotValues, 0, "", valuesPlotMin, valuesPlotMax, { 0.0, state.window.heightPlot });
+    local valuesPlotClicked = imgui.IsItemClicked();
+    local valuesPlotRightClicked = imgui.IsItemClicked(1);
+    local valuesPlotHovered = imgui.IsItemHovered();
+    drawCenteredPlotOverlay(valuesPlotX, valuesPlotY, valuesPlotW, state.window.heightPlot, plotValuesLabel, valuesPlotColor);
     imgui.PopStyleColor()
-    if imgui.IsItemClicked() then
+    if valuesPlotClicked then
         state.values.valuesLabelIndex = cycleIndex(state.values.valuesLabelIndex, 1, 3);
     end
-    if imgui.IsItemClicked(1) then
+    if valuesPlotRightClicked then
         state.values.valuesLabelIndex = cycleIndex(state.values.valuesLabelIndex, 1, 3, -1);
     end
-    if imgui.IsItemHovered() then
+    if valuesPlotHovered then
         imgui.SetTooltip(string.format(
             "Value/HR trend\nCurrent: %.2f\nRange: 0 to session high-water\nL/R click: cycle label format",
             valuesPerHour
@@ -5795,6 +6083,12 @@ ashita.events.register('d3d_present', 'yield_render', function()
             imgui.PopID();
         end
         imgui.EndChild();
+        if settings.general.showToolTips and imgui.IsItemHovered() and not state.values.yieldListBtnsHovered and not yieldListRowHovered then
+            imgui.SetTooltip(string.format(
+                "Yield list\nSort: %s\nL click empty space: next sort\nR click empty space: previous sort",
+                tostring(yieldsSortMap[state.values.yieldSortIndex][2] or "Unknown")
+            ));
+        end
         if imgui.IsItemClicked() then
             state.values.yieldListClicked = true;
             if not state.values.yieldListBtnsHovered and not yieldListRowHovered then
@@ -5958,15 +6252,45 @@ ashita.events.register('d3d_present', 'yield_render', function()
     -- CONFIRM
     local io = imgui.GetIO();
     local modalWidth, modalHeight = state.window.widthModalConfirm, state.window.heightModalConfirm;
+    local ui = state.window.ui or {};
+    local uiSpace = ui.space or {};
     local textScale = tonumber(state.window.textScale) or 1.0;
     local textPx = math.max(8.0, (tonumber(defaultFontSize) or 12.0) * textScale);
+    local lineHeight = math.max(textPx, (tonumber(imgui.GetTextLineHeight()) or 0.0));
     local charWidthPx = math.max(4.0, textPx * 0.52);
-    local wrapWidth = math.max(140.0, tonumber(modalWidth) - ((tonumber(state.window.padX) or 5.0) * 4.0));
+    local modalPadX = math.max((tonumber(state.window.padX) or 5.0) * 2.0, tonumber(uiSpace.md) or 0.0);
+    local modalPadY = math.max((tonumber(state.window.padY) or 5.0) * 2.0, tonumber(uiSpace.md) or 0.0);
+    local modalInsetX = math.max(tonumber(uiSpace.md) or 0.0, (tonumber(state.window.padX) or 5.0) * 1.5);
+    local modalSectionGap = math.max(tonumber(uiSpace.vSection) or 0.0, (tonumber(state.window.padY) or 5.0) * 1.25);
+    local bodyGap = math.max(tonumber(uiSpace.vRow) or 0.0, (tonumber(state.window.padY) or 5.0));
+    local footerGap = modalSectionGap;
+    local modalHeaderText = "Yield Confirm";
+    local headerTopPad = math.max(2.0, tonumber(uiSpace.xs) or 0.0);
+    local headerDividerGap = math.max(2.0, tonumber(uiSpace.xs) or 0.0);
+    local headerDividerReserve = math.max(
+        tonumber(imgui.GetFrameHeightWithSpacing()) or 0.0,
+        lineHeight + headerDividerGap + 2.0
+    );
+    local headerReserve = headerTopPad + lineHeight + headerDividerReserve;
+    local footerDividerGap = math.max(2.0, tonumber(uiSpace.xs) or 0.0);
+    local footerDividerReserve = math.max(6.0, (footerDividerGap * 2.0) + 1.0);
+    local footerButtonHeight, _, _, footerReserve = calcFooterMetrics();
+    local confirmFooterReserve = math.ceil(tonumber(footerReserve) or 0.0);
+    local wrapWidth = math.max(160.0, tonumber(modalWidth) - (modalInsetX * 2.0) - modalPadX);
     local promptLines = estimateWrappedLineCount(state.values.modalConfirmPrompt, wrapWidth, charWidthPx);
-    local helpLines = estimateWrappedLineCount(state.values.modalConfirmHelp, wrapWidth, charWidthPx);
-    local buttonRowH = math.max(tonumber(calcScaledButtonHeight()) or 0.0, textPx);
-    local spacingPad = math.max(14.0, (tonumber(state.window.padY) or 5.0) * 3.5);
-    local neededHeight = (promptLines + helpLines) * (textPx + 2.0) + buttonRowH + spacingPad + 36.0;
+    local helpText = tostring(state.values.modalConfirmHelp or "");
+    local helpLines = estimateWrappedLineCount(helpText, wrapWidth, charWidthPx);
+    local hintText = "Click outside to cancel.";
+    local hintLines = estimateWrappedLineCount(hintText, wrapWidth, charWidthPx);
+    local bodyTextHeight = math.max(lineHeight, promptLines * lineHeight);
+    if helpText ~= "" then
+        bodyTextHeight = bodyTextHeight + bodyGap + math.max(lineHeight, helpLines * lineHeight);
+    end
+    bodyTextHeight = bodyTextHeight + bodyGap + math.max(lineHeight, hintLines * lineHeight);
+    local bodyBottomReserve = footerGap + math.max(lineHeight * 0.35, tonumber(uiSpace.xs) or 0.0);
+    local bodyReserve = headerReserve + modalSectionGap + bodyTextHeight + bodyBottomReserve;
+    local modalBottomReserve = math.max(2.0, tonumber(uiSpace.xs) or 0.0);
+    local neededHeight = modalPadY + bodyReserve + footerDividerReserve + (tonumber(confirmFooterReserve) or 0.0) + modalBottomReserve;
     modalHeight = math.max(tonumber(modalHeight) or 0.0, math.ceil(neededHeight));
     local modalX = (io.DisplaySize.x * 0.5) - (modalWidth * 0.5);
     local modalY = (io.DisplaySize.y * 0.5) - (modalHeight * 0.5);
@@ -5978,70 +6302,143 @@ ashita.events.register('d3d_present', 'yield_render', function()
         state.values.openConfirmRequested = false;
     end
     imgui.PushStyleVar(ImGuiStyleVar.Alpha, 1.0);
-    if imgui.BeginPopupModal("Yield Confirm", imgui.GetVarValue(uiVariables['var_WindowVisible']), bit.bor(ImGuiWindowFlags.NoResize, ImGuiWindowFlags.NoCollapse)) then
+    if imgui.BeginPopupModal("Yield Confirm", imgui.GetVarValue(uiVariables['var_WindowVisible']), bit.bor(ImGuiWindowFlags.NoTitleBar, ImGuiWindowFlags.NoResize, ImGuiWindowFlags.NoCollapse)) then
         setWindowFontScale(state.window.textScale);
         logScaleSnapshot("confirm", "");
         local handledByButton = false;
-        local buttonRowPad = math.max(8.0, (tonumber(state.window.padY) or 5.0) * 1.4);
-        local bodyHeight = math.max(0.0, (tonumber(modalHeight) or 0.0) - buttonRowH - (buttonRowPad * 2.2));
-        if imgui.BeginChild("ConfirmBody", { -1, bodyHeight }, false) then
-            local wrapStartX = imgui.GetCursorPosX();
-            imgui.PushTextWrapPos(wrapStartX + wrapWidth);
-            imgui.Text(state.values.modalConfirmPrompt);
+        local itemGapX = (uiSpace and tonumber(uiSpace.sm)) or 0.0;
+        imgui.PushStyleVar(ImGuiStyleVar.ItemSpacing, { itemGapX, 0.0 });
+        local bodyOpened = imgui.BeginChild("ConfirmBody", { -1, bodyReserve }, false, bit.bor(ImGuiWindowFlags.NoScrollbar, ImGuiWindowFlags.NoScrollWithMouse));
+        if bodyOpened then
+            local wrapStartX = imgui.GetCursorPosX() + modalInsetX;
+            local headerStartY = imgui.GetCursorPosY() + headerTopPad;
+            local bodyAvailX = getAvailX(imgui.GetContentRegionAvail());
+            local bodyWrapWidth = math.max(160.0, math.min(wrapWidth, math.max(160.0, bodyAvailX - (modalInsetX * 2.0))));
+            local wrapPos = wrapStartX + bodyWrapWidth;
+            imgui.SetCursorPosX(wrapStartX);
+            imgui.SetCursorPosY(headerStartY);
+            imgui.PushStyleColor(ImGuiCol_Text, SETTINGS_HEADER_TEXT_COLOR);
+            imgui.TextUnformatted(modalHeaderText);
+            imgui.PopStyleColor();
+            imgui.SetCursorPosX(wrapStartX);
+            imgui.SetCursorPosY(imgui.GetCursorPosY() + headerDividerGap);
+            imgui.PushStyleColor(ImGuiCol.Separator, SETTINGS_HEADER_LINE_COLOR);
+            imgui.Separator();
+            imgui.PopStyleColor();
+            imgui.SetCursorPosY(imgui.GetCursorPosY() + modalSectionGap);
+            imgui.SetCursorPosX(wrapStartX);
+            imgui.PushTextWrapPos(wrapPos);
+            imgui.TextUnformatted(state.values.modalConfirmPrompt or "");
             imgui.PopTextWrapPos();
-            imgui.Spacing();
-            if state.values.modalConfirmHelp ~= nil and state.values.modalConfirmHelp ~= "" then
-                local r, g, b, a = 0.39, 0.96, 0.13, 1
+
+            if helpText ~= "" then
+                imgui.SetCursorPosY(imgui.GetCursorPosY() + bodyGap);
+                imgui.SetCursorPosX(wrapStartX);
+                local r, g, b, a = 0.39, 0.96, 0.13, 1.0;
                 if state.values.modalConfirmDanger then
-                    r, g, b, a =  1, 0.615, 0.615, 1
+                    r, g, b, a = 1.0, 0.615, 0.615, 1.0;
                 end
-                local helpStartX = imgui.GetCursorPosX();
-                imgui.PushTextWrapPos(helpStartX + wrapWidth);
-                imgui.TextColored({ r, g, b, a }, state.values.modalConfirmHelp);
+                imgui.PushTextWrapPos(wrapPos);
+                imgui.TextColored({ r, g, b, a }, helpText);
                 imgui.PopTextWrapPos();
             end
+
+            imgui.SetCursorPosY(imgui.GetCursorPosY() + bodyGap);
+            imgui.SetCursorPosX(wrapStartX);
+            imgui.PushStyleColor(ImGuiCol_Text, { 0.77, 0.83, 0.80, 1.0 });
+            imgui.PushTextWrapPos(wrapPos);
+            imgui.TextUnformatted(hintText);
+            imgui.PopTextWrapPos();
+            imgui.PopStyleColor();
         end
         imgui.EndChild();
-        imgui.Separator();
-        if uiButtonCompact("Yes") or state.initializing then
-            handledByButton = true;
-            imgui.CloseCurrentPopup();
-            state.actions.modalCancelAction = function() end
-            writeDebugLog('confirm modal: YES');
-            local action = state.actions and state.actions.modalConfirmAction or nil;
-            if type(action) == 'function' then
-                local ok, err = pcall(action);
-                if not ok then
-                    writeDebugLog(string.format('ERROR confirm action: %s', tostring(err)));
-                    writeDebugLog(debug.traceback());
-                end
-            else
-                writeDebugLog('ERROR confirm action missing or not a function');
-            end
+
+        local dividerOpened = imgui.BeginChild("ConfirmFooterDivider", { -1, footerDividerReserve }, false, bit.bor(ImGuiWindowFlags.NoScrollbar, ImGuiWindowFlags.NoScrollWithMouse));
+        if dividerOpened then
+            local dividerStartX = imgui.GetCursorPosX();
+            local dividerStartY = imgui.GetCursorPosY();
+            local dividerContentX = dividerStartX + modalInsetX;
+            imgui.SetCursorPosX(dividerContentX);
+            imgui.SetCursorPosY(dividerStartY + footerDividerGap);
+            imgui.PushStyleColor(ImGuiCol.Separator, SETTINGS_HEADER_LINE_COLOR);
+            imgui.Separator();
+            imgui.PopStyleColor();
         end
-        imgui.SameLine(0.0, 10);
-        if uiButtonCompact("No") then
-            handledByButton = true;
-            imgui.CloseCurrentPopup();
-            state.actions.modalConfirmAction = function() end
-            writeDebugLog('confirm modal: NO');
-            local cancelAction = state.actions and state.actions.modalCancelAction or nil;
-            if type(cancelAction) == 'function' then
-                local ok, err = pcall(cancelAction);
-                if not ok then
-                    writeDebugLog(string.format('ERROR cancel action: %s', tostring(err)));
-                    writeDebugLog(debug.traceback());
+        imgui.EndChild();
+
+        local footerOpened = imgui.BeginChild("ConfirmFooterRow", { -1, confirmFooterReserve }, false, bit.bor(ImGuiWindowFlags.NoScrollbar, ImGuiWindowFlags.NoScrollWithMouse));
+        if footerOpened then
+            local footerStartX = imgui.GetCursorPosX();
+            local footerStartY = imgui.GetCursorPosY();
+            local footerAvailX, footerAvailY = getAvailXY(imgui.GetContentRegionAvail(), confirmFooterReserve);
+            footerAvailY = math.max(0.0, math.min(tonumber(footerAvailY) or 0.0, tonumber(confirmFooterReserve) or 0.0));
+            local footerRowOffset = math.max(0.0, (footerAvailY - footerButtonHeight) * 0.5);
+            local footerRowY = footerStartY + footerRowOffset;
+            local footerTopPad = footerRowOffset;
+            local footerBottomPad = math.max(0.0, footerAvailY - footerRowOffset - footerButtonHeight);
+            local footerButtonWidth = math.max(
+                tonumber(state.values.settingsFooterDoneW) or 0.0,
+                estimateButtonWidthForButtons("Cancel", false),
+                estimateButtonWidthForButtons("Yes", false),
+                estimateButtonWidthForButtons("No", false)
+            );
+            local footerSpacing = math.max(tonumber(uiSpace.md) or 0.0, tonumber(state.window.spaceSettingsBtn) or 0.0);
+            local footerContentX = footerStartX + modalInsetX;
+            logLayoutBreadcrumb("footer_confirm_left", string.format(
+                "start=(%.1f,%.1f) avail=(%.1f,%.1f) inset=%.1f btnW=%.1f btnH=%.1f gap=%.1f topPad=%.1f bottomPad=%.1f",
+                tonumber(footerStartX) or 0.0,
+                tonumber(footerStartY) or 0.0,
+                tonumber(footerAvailX) or 0.0,
+                tonumber(footerAvailY) or 0.0,
+                tonumber(modalInsetX) or 0.0,
+                tonumber(footerButtonWidth) or 0.0,
+                tonumber(footerButtonHeight) or 0.0,
+                tonumber(footerSpacing) or 0.0,
+                tonumber(footerTopPad) or 0.0,
+                tonumber(footerBottomPad) or 0.0
+            ));
+
+            imgui.SetCursorPosX(footerContentX);
+            imgui.SetCursorPosY(footerRowY);
+            if uiButton("Yes", { footerButtonWidth, footerButtonHeight }) or state.initializing then
+                handledByButton = true;
+                imgui.CloseCurrentPopup();
+                state.actions.modalCancelAction = function() end
+                writeDebugLog('confirm modal: YES');
+                local action = state.actions and state.actions.modalConfirmAction or nil;
+                if type(action) == 'function' then
+                    local ok, err = pcall(action);
+                    if not ok then
+                        writeDebugLog(string.format('ERROR confirm action: %s', tostring(err)));
+                        writeDebugLog(debug.traceback());
+                    end
+                else
+                    writeDebugLog('ERROR confirm action missing or not a function');
                 end
-            else
-                writeDebugLog('ERROR cancel action missing or not a function');
             end
+            logFooterItemRect("confirm_left", "Yes", footerRowY, confirmFooterReserve);
+
+            imgui.SameLine(0.0, footerSpacing);
+            if uiButton("No", { footerButtonWidth, footerButtonHeight }) then
+                handledByButton = true;
+                imgui.CloseCurrentPopup();
+                state.actions.modalConfirmAction = function() end
+                writeDebugLog('confirm modal: NO');
+                local cancelAction = state.actions and state.actions.modalCancelAction or nil;
+                if type(cancelAction) == 'function' then
+                    local ok, err = pcall(cancelAction);
+                    if not ok then
+                        writeDebugLog(string.format('ERROR cancel action: %s', tostring(err)));
+                        writeDebugLog(debug.traceback());
+                    end
+                else
+                    writeDebugLog('ERROR cancel action missing or not a function');
+                end
+            end
+            logFooterItemRect("confirm_left", "No", footerRowY, confirmFooterReserve);
         end
-        imgui.Spacing();
-        local prevScale = (state and state.window and state.window.currentTextScale) or state.window.textScale;
-        setWindowFontScale(state.window.buttonTextScale);
-        imgui.AlignTextToFramePadding();
-        imgui.Text("Click outside to cancel.");
-        setWindowFontScale(prevScale);
+        imgui.EndChild();
+        imgui.PopStyleVar();
 
         if not handledByButton and type(imgui.IsMouseClicked) == 'function' then
             local suppressClickAway = state.values.confirmIgnoreClickAway == true;
@@ -6137,9 +6534,11 @@ ashita.events.register('d3d_present', 'yield_render', function()
                 end
             else
                 state.values.settingsSnapshot = nil;
+                state.values.settingsTrackedSnapshot = nil;
                 state.values.settingsUiSnapshotFingerprint = nil;
             end
         else
+            state.values.settingsTrackedSnapshot = nil;
             state.values.settingsUiSnapshotFingerprint = nil;
         end
     end
