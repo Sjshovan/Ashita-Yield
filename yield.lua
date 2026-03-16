@@ -396,6 +396,99 @@ local gatherTypes =
     [7] = { name = "digging",    short = "di.", target = nil,                tool = "gysahl green",  toolId = 4545, action = "dig" }
 }
 
+local metricTotalKeys = { "lost", "yields", "breaks", "attempts", "toolCost" }
+
+local function cloneMetricTotals(sourceTotals)
+    local totals = {};
+    sourceTotals = type(sourceTotals) == "table" and sourceTotals or {};
+    for _, key in ipairs(metricTotalKeys) do
+        totals[key] = math.max(0, math.floor(tonumber(sourceTotals[key]) or 0));
+    end
+    return totals;
+end
+
+local function cloneMetricPoints(sourcePoints)
+    local points = { yields = {}, values = {} };
+    sourcePoints = type(sourcePoints) == "table" and sourcePoints or {};
+    for _, key in ipairs({ "yields", "values" }) do
+        local sourceList = type(sourcePoints[key]) == "table" and sourcePoints[key] or nil;
+        if sourceList ~= nil then
+            for _, value in ipairs(sourceList) do
+                points[key][#points[key] + 1] = tonumber(value) or 0;
+            end
+        end
+        if #points[key] == 0 then
+            points[key][1] = 0;
+        end
+    end
+    return points;
+end
+
+local function cloneMetricYieldCounts(gatherName, sourceYields)
+    local yields = {};
+    local dropped = 0;
+    local allowedYields = settings and settings.yields and settings.yields[gatherName] or nil;
+    sourceYields = type(sourceYields) == "table" and sourceYields or {};
+
+    for yieldName, count in pairs(sourceYields) do
+        local key = tostring(yieldName or "");
+        local qty = math.max(0, math.floor(tonumber(count) or 0));
+        if key ~= "" and qty > 0 and (allowedYields == nil or allowedYields[key] ~= nil) then
+            yields[key] = qty;
+        elseif key ~= "" and qty > 0 then
+            dropped = dropped + 1;
+        end
+    end
+
+    return yields, dropped;
+end
+
+local function sumMetricYieldCounts(yields)
+    local total = 0;
+    if type(yields) ~= "table" then
+        return total;
+    end
+    for _, count in pairs(yields) do
+        total = total + math.max(0, math.floor(tonumber(count) or 0));
+    end
+    return total;
+end
+
+local function cloneGatherMetrics(gatherName, sourceMetric)
+    local metric = type(sourceMetric) == "table" and sourceMetric or {};
+    local yields, dropped = cloneMetricYieldCounts(gatherName, metric.yields);
+    local cloned =
+    {
+        totals = cloneMetricTotals(metric.totals),
+        toolUnitsUsed = math.max(0, math.floor(tonumber(metric.toolUnitsUsed) or 0)),
+        secondsPassed = math.max(0, math.floor(tonumber(metric.secondsPassed) or 0)),
+        estimatedValue = math.max(0, math.floor(tonumber(metric.estimatedValue) or 0)),
+        yields = yields,
+        points = cloneMetricPoints(metric.points),
+    };
+
+    cloned.totals.yields = sumMetricYieldCounts(cloned.yields);
+    if dropped > 0 and type(writeDebugLog) == "function" then
+        writeDebugLog(string.format(
+            'metrics_sanitize dropped_rows gather=%s count=%d',
+            tostring(gatherName), tonumber(dropped) or 0
+        ));
+    end
+    return cloned;
+end
+
+local function cloneAllGatherMetrics(sourceMetrics)
+    local cloned = {};
+    sourceMetrics = type(sourceMetrics) == "table" and sourceMetrics or {};
+    for _, data in ipairs(gatherTypes) do
+        local gatherName = tostring(data.name or "");
+        if gatherName ~= "" then
+            cloned[gatherName] = cloneGatherMetrics(gatherName, sourceMetrics[gatherName]);
+        end
+    end
+    return cloned;
+end
+
 local eventAlertDefs =
 {
     harvesting =
@@ -563,20 +656,20 @@ local uiVariables =
     ["var_ClamBreakSoundFile"]    = { '' },
     ["var_AutoGenReports"]        = { true },
     ["var_WindowLocked"]          = { false },
-    ["var_TextScaleBase"]         = { 1.15 },
-    ["var_TextScaleFactor"]       = { 0.45 },
-    ["var_MetricsTextScaleBase"]  = { 1.15 },
-    ["var_MetricsTextScaleFactor"]= { 0.45 },
-    ["var_ButtonTextScaleBase"]   = { 1.10 },
-    ["var_ButtonTextScaleFactor"] = { 0.45 },
-    ["var_ButtonSizeXBase"]       = { 0.95 },
-    ["var_ButtonSizeXFactor"]     = { 1.0 },
-    ["var_ButtonSizeYBase"]       = { 0.95 },
-    ["var_ButtonSizeYFactor"]     = { 1.0 },
-    ["var_WindowXScaleBase"]      = { 1.0 },
-    ["var_WindowXScaleFactor"]    = { 1.0 },
-    ["var_WindowYScaleBase"]      = { 1.0 },
-    ["var_WindowYScaleFactor"]    = { 1.0 },
+    ["var_TextScaleBase"]         = { 0.0 },
+    ["var_TextScaleFactor"]       = { 0.0 },
+    ["var_MetricsTextScaleBase"]  = { 0.0 },
+    ["var_MetricsTextScaleFactor"]= { 0.0 },
+    ["var_ButtonTextScaleBase"]   = { 0.0 },
+    ["var_ButtonTextScaleFactor"] = { 0.0 },
+    ["var_ButtonSizeXBase"]       = { 0.0 },
+    ["var_ButtonSizeXFactor"]     = { 0.0 },
+    ["var_ButtonSizeYBase"]       = { 0.0 },
+    ["var_ButtonSizeYFactor"]     = { 0.0 },
+    ["var_WindowXScaleBase"]      = { 0.0 },
+    ["var_WindowXScaleFactor"]    = { 0.0 },
+    ["var_WindowYScaleBase"]      = { 0.0 },
+    ["var_WindowYScaleFactor"]    = { 0.0 },
 
     -- Internal
     ['var_WindowVisible']          = { true },
@@ -656,9 +749,12 @@ local function clampSettingNumber(value, defaultValue, minValue, maxValue)
     return n;
 end
 
+local SCALE_TUNING_OFFSET_RANGE = 0.500;
+
 local function ensureScaleTuningSettings()
     if settings and settings.general then
         local g = settings.general;
+        local defaults = defaultSettingsTemplate.general;
         local legacyBtnXFactor = tonumber(g.buttonSizeXFactor);
         local legacyBtnYFactor = tonumber(g.buttonSizeYFactor);
         local legacyBtnFactorOk =
@@ -671,36 +767,40 @@ local function ensureScaleTuningSettings()
             tonumber(g.buttonSizeXBase) == 1.0 and tonumber(g.buttonSizeYBase) == 1.0 and
             legacyBtnFactorOk;
         if legacyDefaults then
-            g.textScaleBase = 1.15;
-            g.textScaleFactor = 0.45;
-            g.metricsTextScaleBase = 1.15;
-            g.metricsTextScaleFactor = 0.45;
-            g.buttonTextScaleBase = 1.10;
-            g.buttonTextScaleFactor = 0.45;
-            g.buttonSizeXBase = 0.95;
-            g.buttonSizeXFactor = 1.0;
-            g.buttonSizeYBase = 0.95;
-            g.buttonSizeYFactor = 1.0;
+            g.textScaleBase = defaults.textScaleBase;
+            g.textScaleFactor = defaults.textScaleFactor;
+            g.metricsTextScaleBase = defaults.metricsTextScaleBase;
+            g.metricsTextScaleFactor = defaults.metricsTextScaleFactor;
+            g.buttonTextScaleBase = defaults.buttonTextScaleBase;
+            g.buttonTextScaleFactor = defaults.buttonTextScaleFactor;
+            g.buttonSizeXBase = defaults.buttonSizeXBase;
+            g.buttonSizeXFactor = defaults.buttonSizeXFactor;
+            g.buttonSizeYBase = defaults.buttonSizeYBase;
+            g.buttonSizeYFactor = defaults.buttonSizeYFactor;
+            g.windowXScaleBase = defaults.windowXScaleBase;
+            g.windowXScaleFactor = defaults.windowXScaleFactor;
+            g.windowYScaleBase = defaults.windowYScaleBase;
+            g.windowYScaleFactor = defaults.windowYScaleFactor;
             writeDebugLog('migrate scale defaults -> v2');
         end
         if tonumber(g.windowYScaleFactor) == 0.72 then
-            g.windowYScaleFactor = 1.0;
+            g.windowYScaleFactor = defaults.windowYScaleFactor;
         end
     end
-    settings.general.textScaleBase      = clampSettingNumber(settings.general.textScaleBase, 1.15, 0.5, 3.0);
-    settings.general.textScaleFactor    = clampSettingNumber(settings.general.textScaleFactor, 0.45, 0.0, 3.0);
-    settings.general.metricsTextScaleBase   = clampSettingNumber(settings.general.metricsTextScaleBase, settings.general.textScaleBase, 0.5, 3.0);
-    settings.general.metricsTextScaleFactor = clampSettingNumber(settings.general.metricsTextScaleFactor, settings.general.textScaleFactor, 0.0, 3.0);
-    settings.general.buttonTextScaleBase    = clampSettingNumber(settings.general.buttonTextScaleBase, 1.10, 0.5, 3.0);
-    settings.general.buttonTextScaleFactor  = clampSettingNumber(settings.general.buttonTextScaleFactor, settings.general.textScaleFactor, 0.0, 3.0);
-    settings.general.buttonSizeXBase        = clampSettingNumber(settings.general.buttonSizeXBase, 0.95, 0.5, 3.0);
-    settings.general.buttonSizeXFactor      = clampSettingNumber(settings.general.buttonSizeXFactor, 1.0, 0.0, 3.0);
-    settings.general.buttonSizeYBase        = clampSettingNumber(settings.general.buttonSizeYBase, 0.95, 0.5, 3.0);
-    settings.general.buttonSizeYFactor      = clampSettingNumber(settings.general.buttonSizeYFactor, 1.0, 0.0, 3.0);
-    settings.general.windowXScaleBase   = clampSettingNumber(settings.general.windowXScaleBase, 1.0, 0.5, 3.0);
-    settings.general.windowXScaleFactor = clampSettingNumber(settings.general.windowXScaleFactor, 1.0, 0.0, 3.0);
-    settings.general.windowYScaleBase   = clampSettingNumber(settings.general.windowYScaleBase, 1.0, 0.5, 3.0);
-    settings.general.windowYScaleFactor = clampSettingNumber(settings.general.windowYScaleFactor, 1.0, 0.0, 3.0);
+    settings.general.textScaleBase          = clampSettingNumber(settings.general.textScaleBase, defaultSettingsTemplate.general.textScaleBase, 0.25, 3.0);
+    settings.general.textScaleFactor        = clampSettingNumber(settings.general.textScaleFactor, defaultSettingsTemplate.general.textScaleFactor, 0.0, 3.0);
+    settings.general.metricsTextScaleBase   = clampSettingNumber(settings.general.metricsTextScaleBase, defaultSettingsTemplate.general.metricsTextScaleBase, 0.25, 3.0);
+    settings.general.metricsTextScaleFactor = clampSettingNumber(settings.general.metricsTextScaleFactor, defaultSettingsTemplate.general.metricsTextScaleFactor, 0.0, 3.0);
+    settings.general.buttonTextScaleBase    = clampSettingNumber(settings.general.buttonTextScaleBase, defaultSettingsTemplate.general.buttonTextScaleBase, 0.25, 3.0);
+    settings.general.buttonTextScaleFactor  = clampSettingNumber(settings.general.buttonTextScaleFactor, defaultSettingsTemplate.general.buttonTextScaleFactor, 0.0, 3.0);
+    settings.general.buttonSizeXBase        = clampSettingNumber(settings.general.buttonSizeXBase, defaultSettingsTemplate.general.buttonSizeXBase, 0.25, 3.0);
+    settings.general.buttonSizeXFactor      = clampSettingNumber(settings.general.buttonSizeXFactor, defaultSettingsTemplate.general.buttonSizeXFactor, 0.0, 3.0);
+    settings.general.buttonSizeYBase        = clampSettingNumber(settings.general.buttonSizeYBase, defaultSettingsTemplate.general.buttonSizeYBase, 0.25, 3.0);
+    settings.general.buttonSizeYFactor      = clampSettingNumber(settings.general.buttonSizeYFactor, defaultSettingsTemplate.general.buttonSizeYFactor, 0.0, 3.0);
+    settings.general.windowXScaleBase       = clampSettingNumber(settings.general.windowXScaleBase, defaultSettingsTemplate.general.windowXScaleBase, 0.25, 3.0);
+    settings.general.windowXScaleFactor     = clampSettingNumber(settings.general.windowXScaleFactor, defaultSettingsTemplate.general.windowXScaleFactor, 0.0, 3.0);
+    settings.general.windowYScaleBase       = clampSettingNumber(settings.general.windowYScaleBase, defaultSettingsTemplate.general.windowYScaleBase, 0.25, 3.0);
+    settings.general.windowYScaleFactor     = clampSettingNumber(settings.general.windowYScaleFactor, defaultSettingsTemplate.general.windowYScaleFactor, 0.0, 3.0);
 end
 
 local function sanitizeColorSettings()
@@ -768,37 +868,39 @@ end
 
 local function syncScaleTuningVarsFromSettings()
     ensureScaleTuningSettings();
-    imgui.SetVarValue(uiVariables["var_TextScaleBase"], settings.general.textScaleBase);
-    imgui.SetVarValue(uiVariables["var_TextScaleFactor"], settings.general.textScaleFactor);
-    imgui.SetVarValue(uiVariables["var_MetricsTextScaleBase"], settings.general.metricsTextScaleBase);
-    imgui.SetVarValue(uiVariables["var_MetricsTextScaleFactor"], settings.general.metricsTextScaleFactor);
-    imgui.SetVarValue(uiVariables["var_ButtonTextScaleBase"], settings.general.buttonTextScaleBase);
-    imgui.SetVarValue(uiVariables["var_ButtonTextScaleFactor"], settings.general.buttonTextScaleFactor);
-    imgui.SetVarValue(uiVariables["var_ButtonSizeXBase"], settings.general.buttonSizeXBase);
-    imgui.SetVarValue(uiVariables["var_ButtonSizeXFactor"], settings.general.buttonSizeXFactor);
-    imgui.SetVarValue(uiVariables["var_ButtonSizeYBase"], settings.general.buttonSizeYBase);
-    imgui.SetVarValue(uiVariables["var_ButtonSizeYFactor"], settings.general.buttonSizeYFactor);
-    imgui.SetVarValue(uiVariables["var_WindowXScaleBase"], settings.general.windowXScaleBase);
-    imgui.SetVarValue(uiVariables["var_WindowXScaleFactor"], settings.general.windowXScaleFactor);
-    imgui.SetVarValue(uiVariables["var_WindowYScaleBase"], settings.general.windowYScaleBase);
-    imgui.SetVarValue(uiVariables["var_WindowYScaleFactor"], settings.general.windowYScaleFactor);
+    local defaults = defaultSettingsTemplate.general;
+    imgui.SetVarValue(uiVariables["var_TextScaleBase"], settings.general.textScaleBase - defaults.textScaleBase);
+    imgui.SetVarValue(uiVariables["var_TextScaleFactor"], settings.general.textScaleFactor - defaults.textScaleFactor);
+    imgui.SetVarValue(uiVariables["var_MetricsTextScaleBase"], settings.general.metricsTextScaleBase - defaults.metricsTextScaleBase);
+    imgui.SetVarValue(uiVariables["var_MetricsTextScaleFactor"], settings.general.metricsTextScaleFactor - defaults.metricsTextScaleFactor);
+    imgui.SetVarValue(uiVariables["var_ButtonTextScaleBase"], settings.general.buttonTextScaleBase - defaults.buttonTextScaleBase);
+    imgui.SetVarValue(uiVariables["var_ButtonTextScaleFactor"], settings.general.buttonTextScaleFactor - defaults.buttonTextScaleFactor);
+    imgui.SetVarValue(uiVariables["var_ButtonSizeXBase"], settings.general.buttonSizeXBase - defaults.buttonSizeXBase);
+    imgui.SetVarValue(uiVariables["var_ButtonSizeXFactor"], settings.general.buttonSizeXFactor - defaults.buttonSizeXFactor);
+    imgui.SetVarValue(uiVariables["var_ButtonSizeYBase"], settings.general.buttonSizeYBase - defaults.buttonSizeYBase);
+    imgui.SetVarValue(uiVariables["var_ButtonSizeYFactor"], settings.general.buttonSizeYFactor - defaults.buttonSizeYFactor);
+    imgui.SetVarValue(uiVariables["var_WindowXScaleBase"], settings.general.windowXScaleBase - defaults.windowXScaleBase);
+    imgui.SetVarValue(uiVariables["var_WindowXScaleFactor"], settings.general.windowXScaleFactor - defaults.windowXScaleFactor);
+    imgui.SetVarValue(uiVariables["var_WindowYScaleBase"], settings.general.windowYScaleBase - defaults.windowYScaleBase);
+    imgui.SetVarValue(uiVariables["var_WindowYScaleFactor"], settings.general.windowYScaleFactor - defaults.windowYScaleFactor);
 end
 
 local function syncScaleTuningSettingsFromVars()
-    settings.general.textScaleBase      = clampSettingNumber(imgui.GetVarValue(uiVariables["var_TextScaleBase"]), 1.15, 0.5, 3.0);
-    settings.general.textScaleFactor    = clampSettingNumber(imgui.GetVarValue(uiVariables["var_TextScaleFactor"]), 0.45, 0.0, 3.0);
-    settings.general.metricsTextScaleBase   = clampSettingNumber(imgui.GetVarValue(uiVariables["var_MetricsTextScaleBase"]), settings.general.textScaleBase, 0.5, 3.0);
-    settings.general.metricsTextScaleFactor = clampSettingNumber(imgui.GetVarValue(uiVariables["var_MetricsTextScaleFactor"]), settings.general.textScaleFactor, 0.0, 3.0);
-    settings.general.buttonTextScaleBase    = clampSettingNumber(imgui.GetVarValue(uiVariables["var_ButtonTextScaleBase"]), 1.10, 0.5, 3.0);
-    settings.general.buttonTextScaleFactor  = clampSettingNumber(imgui.GetVarValue(uiVariables["var_ButtonTextScaleFactor"]), settings.general.textScaleFactor, 0.0, 3.0);
-    settings.general.buttonSizeXBase        = clampSettingNumber(imgui.GetVarValue(uiVariables["var_ButtonSizeXBase"]), 0.95, 0.5, 3.0);
-    settings.general.buttonSizeXFactor      = clampSettingNumber(imgui.GetVarValue(uiVariables["var_ButtonSizeXFactor"]), 1.0, 0.0, 3.0);
-    settings.general.buttonSizeYBase        = clampSettingNumber(imgui.GetVarValue(uiVariables["var_ButtonSizeYBase"]), 0.95, 0.5, 3.0);
-    settings.general.buttonSizeYFactor      = clampSettingNumber(imgui.GetVarValue(uiVariables["var_ButtonSizeYFactor"]), 1.0, 0.0, 3.0);
-    settings.general.windowXScaleBase   = clampSettingNumber(imgui.GetVarValue(uiVariables["var_WindowXScaleBase"]), 1.0, 0.5, 3.0);
-    settings.general.windowXScaleFactor = clampSettingNumber(imgui.GetVarValue(uiVariables["var_WindowXScaleFactor"]), 1.0, 0.0, 3.0);
-    settings.general.windowYScaleBase   = clampSettingNumber(imgui.GetVarValue(uiVariables["var_WindowYScaleBase"]), 1.0, 0.5, 3.0);
-    settings.general.windowYScaleFactor = clampSettingNumber(imgui.GetVarValue(uiVariables["var_WindowYScaleFactor"]), 1.0, 0.0, 3.0);
+    local defaults = defaultSettingsTemplate.general;
+    settings.general.textScaleBase = clampSettingNumber(defaults.textScaleBase + (tonumber(imgui.GetVarValue(uiVariables["var_TextScaleBase"])) or 0.0), defaults.textScaleBase, 0.25, 3.0);
+    settings.general.textScaleFactor = clampSettingNumber(defaults.textScaleFactor + (tonumber(imgui.GetVarValue(uiVariables["var_TextScaleFactor"])) or 0.0), defaults.textScaleFactor, 0.0, 3.0);
+    settings.general.metricsTextScaleBase = clampSettingNumber(defaults.metricsTextScaleBase + (tonumber(imgui.GetVarValue(uiVariables["var_MetricsTextScaleBase"])) or 0.0), defaults.metricsTextScaleBase, 0.25, 3.0);
+    settings.general.metricsTextScaleFactor = clampSettingNumber(defaults.metricsTextScaleFactor + (tonumber(imgui.GetVarValue(uiVariables["var_MetricsTextScaleFactor"])) or 0.0), defaults.metricsTextScaleFactor, 0.0, 3.0);
+    settings.general.buttonTextScaleBase = clampSettingNumber(defaults.buttonTextScaleBase + (tonumber(imgui.GetVarValue(uiVariables["var_ButtonTextScaleBase"])) or 0.0), defaults.buttonTextScaleBase, 0.25, 3.0);
+    settings.general.buttonTextScaleFactor = clampSettingNumber(defaults.buttonTextScaleFactor + (tonumber(imgui.GetVarValue(uiVariables["var_ButtonTextScaleFactor"])) or 0.0), defaults.buttonTextScaleFactor, 0.0, 3.0);
+    settings.general.buttonSizeXBase = clampSettingNumber(defaults.buttonSizeXBase + (tonumber(imgui.GetVarValue(uiVariables["var_ButtonSizeXBase"])) or 0.0), defaults.buttonSizeXBase, 0.25, 3.0);
+    settings.general.buttonSizeXFactor = clampSettingNumber(defaults.buttonSizeXFactor + (tonumber(imgui.GetVarValue(uiVariables["var_ButtonSizeXFactor"])) or 0.0), defaults.buttonSizeXFactor, 0.0, 3.0);
+    settings.general.buttonSizeYBase = clampSettingNumber(defaults.buttonSizeYBase + (tonumber(imgui.GetVarValue(uiVariables["var_ButtonSizeYBase"])) or 0.0), defaults.buttonSizeYBase, 0.25, 3.0);
+    settings.general.buttonSizeYFactor = clampSettingNumber(defaults.buttonSizeYFactor + (tonumber(imgui.GetVarValue(uiVariables["var_ButtonSizeYFactor"])) or 0.0), defaults.buttonSizeYFactor, 0.0, 3.0);
+    settings.general.windowXScaleBase = clampSettingNumber(defaults.windowXScaleBase + (tonumber(imgui.GetVarValue(uiVariables["var_WindowXScaleBase"])) or 0.0), defaults.windowXScaleBase, 0.25, 3.0);
+    settings.general.windowXScaleFactor = clampSettingNumber(defaults.windowXScaleFactor + (tonumber(imgui.GetVarValue(uiVariables["var_WindowXScaleFactor"])) or 0.0), defaults.windowXScaleFactor, 0.0, 3.0);
+    settings.general.windowYScaleBase = clampSettingNumber(defaults.windowYScaleBase + (tonumber(imgui.GetVarValue(uiVariables["var_WindowYScaleBase"])) or 0.0), defaults.windowYScaleBase, 0.25, 3.0);
+    settings.general.windowYScaleFactor = clampSettingNumber(defaults.windowYScaleFactor + (tonumber(imgui.GetVarValue(uiVariables["var_WindowYScaleFactor"])) or 0.0), defaults.windowYScaleFactor, 0.0, 3.0);
 end
 
 local function ensureAlertEventSettings()
@@ -2111,13 +2213,33 @@ refreshGatherToolCostTotal = function(gatherType)
     if gatherName == "" then
         return 0;
     end
-    metrics[gatherName] = metrics[gatherName] or table.copy(metricsTemplate);
-    metrics[gatherName].totals = metrics[gatherName].totals or table.copy(metricsTemplate.totals);
+    metrics[gatherName] = cloneGatherMetrics(gatherName, metrics[gatherName]);
     metrics[gatherName].toolUnitsUsed = math.max(0, math.floor(tonumber(metrics[gatherName].toolUnitsUsed) or 0));
     local toolUnitsUsed = metrics[gatherName].toolUnitsUsed;
     local toolCost = math.floor(toolUnitsUsed * getGatherToolUnitPrice(gatherName));
     metrics[gatherName].totals.toolCost = math.max(0, tonumber(toolCost) or 0);
     return metrics[gatherName].totals.toolCost;
+end
+
+local function consumeGatherToolUnit(gatherType, amount, reason)
+    local gatherName = tostring(gatherType or "");
+    local delta = math.max(0, math.floor(tonumber(amount) or 0));
+    if gatherName == "" or delta <= 0 then
+        return 0;
+    end
+
+    metrics[gatherName] = cloneGatherMetrics(gatherName, metrics[gatherName]);
+    metrics[gatherName].toolUnitsUsed = math.max(0, math.floor(tonumber(metrics[gatherName].toolUnitsUsed) or 0));
+    metrics[gatherName].toolUnitsUsed = metrics[gatherName].toolUnitsUsed + delta;
+    refreshGatherToolCostTotal(gatherName);
+    writeDebugLog(string.format(
+        'tool_cost consume_manual gather=%s delta=%d used=%d reason=%s',
+        tostring(gatherName),
+        tonumber(delta) or 0,
+        tonumber(metrics[gatherName].toolUnitsUsed) or 0,
+        tostring(reason or "")
+    ));
+    return metrics[gatherName].toolUnitsUsed;
 end
 
 local function computeWarmupNormalizedHourlyRate(total, elapsedSeconds, warmupWindowSeconds)
@@ -2176,13 +2298,38 @@ function updatePlayerStorage()
     for _, data in ipairs(gatherTypes) do
         if data.name ~= "clamming" then
             local itemId = data.toolId;
+            local equippedFishingItem = nil;
+            local equippedFishingCount = nil;
             if data.name == "fishing" then -- check equipment (for fishing bait)
-                local item = ashitaInventory:GetEquippedItem(data.toolId);
-                if item then
-                    itemId = getItemIdFromContainers(item.ItemIndex, containers);
+                equippedFishingItem = ashitaInventory:GetEquippedItem(data.toolId);
+                if equippedFishingItem and tonumber(equippedFishingItem.Index) ~= nil and tonumber(equippedFishingItem.Index) ~= 0 then
+                    local equippedIndex = tonumber(equippedFishingItem.Index) or 0;
+                    local equippedContainer = bit.band(equippedIndex, 0xFF00) / 0x0100;
+                    local equippedSlot = bit.band(equippedIndex, 0x00FF);
+                    local equippedEntry = ashitaInventory:GetContainerItem(equippedContainer, equippedSlot);
+                    local equippedItemId = nil;
+                    if equippedEntry and equippedEntry.Id and equippedEntry.Id > 0 and equippedEntry.Id < 65535 then
+                        equippedItemId = tonumber(equippedEntry.Id);
+                        equippedFishingCount = tonumber(equippedEntry.Count) or 1;
+                    else
+                        equippedItemId = tonumber(equippedFishingItem.Id or equippedFishingItem.ItemId or equippedFishingItem.itemId);
+                    end
+                    if equippedItemId == nil or equippedItemId <= 0 or equippedItemId >= 65535 then
+                        equippedItemId = getItemIdFromContainers(equippedFishingItem.ItemIndex, containers);
+                    end
+                    if equippedItemId ~= nil and equippedItemId > 0 and equippedItemId < 65535 then
+                        itemId = equippedItemId;
+                    end
                 end
             end
             storage[data.tool] = getItemCountFromContainers(itemId, containers);
+            if data.name == "fishing" and equippedFishingItem and (tonumber(storage[data.tool]) or 0) <= 0 then
+                storage[data.tool] = tonumber(equippedFishingCount) or 1;
+                writeDebugLog(string.format(
+                    'fishing_bait_count fallback count=%s itemId=%s equipIndex=%s',
+                    tostring(storage[data.tool]), tostring(itemId), tostring(equippedFishingItem.Index)
+                ));
+            end
         else -- clamming (key item)
             local player = AshitaCore:GetMemoryManager():GetPlayer();
             if player and player:HasKeyItem(data.toolId) then
@@ -2199,12 +2346,14 @@ function updatePlayerStorage()
             lastCount = currentCount;
         end
         if state.timers[gatherName] and state.gathering == gatherName then
-            metrics[gatherName] = metrics[gatherName] or table.copy(metricsTemplate);
-            metrics[gatherName].totals = metrics[gatherName].totals or table.copy(metricsTemplate.totals);
+            metrics[gatherName] = cloneGatherMetrics(gatherName, metrics[gatherName]);
             metrics[gatherName].toolUnitsUsed = tonumber(metrics[gatherName].toolUnitsUsed) or 0;
             if currentCount < lastCount then
                 local consumed = lastCount - currentCount;
                 metrics[gatherName].toolUnitsUsed = metrics[gatherName].toolUnitsUsed + consumed;
+                if gatherName == "digging" then
+                    countDiggingAttemptsFromToolUse(consumed, 'tool_consume');
+                end
                 writeDebugLog(string.format('tool_cost consume gather=%s delta=%d used=%d',
                     tostring(gatherName), tonumber(consumed) or 0, tonumber(metrics[gatherName].toolUnitsUsed) or 0));
             end
@@ -2314,9 +2463,7 @@ local function seedFakeYieldsForGather(gathering, gatherIndex)
     if gathering == nil then
         return 0, 0, 0;
     end
-    metrics[gathering] = metrics[gathering] or table.copy(metricsTemplate);
-    metrics[gathering].totals = metrics[gathering].totals or table.copy(metricsTemplate.totals);
-    metrics[gathering].points = metrics[gathering].points or table.copy(metricsTemplate.points);
+    metrics[gathering] = cloneGatherMetrics(gathering, metrics[gathering]);
     metrics[gathering].yields = {};
 
     local yieldNames = getSortedYieldNames(gathering);
@@ -2391,6 +2538,30 @@ function adjYield(yieldName, val)
     metrics[state.gathering].yields[yieldName] = yield + val
     writeDebugLog(string.format('adjYield gather=%s item=%s delta=%d total=%d', tostring(state.gathering), tostring(yieldName), tonumber(val) or 0, tonumber(metrics[state.gathering].yields[yieldName]) or 0));
     return metrics[state.gathering].yields[yieldName];
+end
+
+local function restoreClammingConfirmedYields(reason)
+    if metrics == nil or metrics["clamming"] == nil then
+        return false;
+    end
+
+    local restoredYields = cloneMetricYieldCounts("clamming", state.values.clamConfirmedYields or {});
+    local restoredRows = 0;
+    for _ in pairs(restoredYields) do
+        restoredRows = restoredRows + 1;
+    end
+    metrics["clamming"] = cloneGatherMetrics("clamming", metrics["clamming"]);
+    metrics["clamming"].yields = restoredYields;
+    metrics["clamming"].totals.yields = sumMetricYieldCounts(restoredYields);
+    recalculateEstimatedValueForGathering("clamming");
+    writeDebugLog(string.format(
+        'clamming_restore_confirmed reason=%s rows=%s total_yields=%s estimatedValue=%s',
+        tostring(reason or ""),
+        tostring(restoredRows),
+        tostring(metrics["clamming"].totals.yields or 0),
+        tostring(metrics["clamming"].estimatedValue or 0)
+    ));
+    return true;
 end
 
 ----------------------------------------------------------------------------------------------------
@@ -2552,20 +2723,12 @@ function updateAllStates(newState)
     end
 
     if metrics[newState] == nil then
-        metrics[newState] = table.copy(metricsTemplate);
         writeDebugLog(string.format('WARN updateAllStates initialized missing metrics for: %s', tostring(newState)));
     end
 
-    metrics[newState].totals = metrics[newState].totals or table.copy(metricsTemplate.totals);
-    metrics[newState].points = metrics[newState].points or table.copy(metricsTemplate.points);
-    metrics[newState].points.yields = metrics[newState].points.yields or { 0 };
-    metrics[newState].points.values = metrics[newState].points.values or { 0 };
-    metrics[newState].yields = metrics[newState].yields or {};
-    metrics[newState].toolUnitsUsed = tonumber(metrics[newState].toolUnitsUsed) or 0;
-    metrics[newState].estimatedValue = tonumber(metrics[newState].estimatedValue) or 0;
-    metrics[newState].secondsPassed = tonumber(metrics[newState].secondsPassed) or 0;
-    metrics[newState].totals.toolCost = tonumber(metrics[newState].totals.toolCost) or 0;
+    metrics[newState] = cloneGatherMetrics(newState, metrics[newState]);
     refreshGatherToolCostTotal(newState);
+    recalculateEstimatedValueForGathering(newState);
 
     settings.zones[newState] = settings.zones[newState] or {};
     state.timers[newState] = state.timers[newState] or false;
@@ -3486,10 +3649,8 @@ function generateGatheringReport(gatherType)
     local zonesCount = table.count(zones);
     local metricData = metrics[gatherType];
     if metricData == nil then return false; end
-    metricData.totals = metricData.totals or table.copy(metricsTemplate.totals);
-    metricData.points = metricData.points or table.copy(metricsTemplate.points);
-    metricData.points.yields = metricData.points.yields or { 0 };
-    metricData.points.values = metricData.points.values or { 0 };
+    metricData = cloneGatherMetrics(gatherType, metricData);
+    metrics[gatherType] = metricData;
     metricData.toolUnitsUsed = math.max(0, math.floor(tonumber(metricData.toolUnitsUsed) or 0));
     local toolsUsedTotal = metricData.toolUnitsUsed;
     local toolCostTotal = refreshGatherToolCostTotal(gatherType);
@@ -3718,7 +3879,7 @@ function saveSettings()
     end
 
     -- Obtain the metrics..
-    settings.metrics = table.copy(metrics);
+    settings.metrics = cloneAllGatherMetrics(metrics);
 
     -- Obtain the state..
     settings.state.gathering           = state.gathering;
@@ -3768,12 +3929,7 @@ ashita.events.register('load', 'yield_load', function()
     -- loop through gathering types..
     for _, data in ipairs(gatherTypes) do
         -- Populate the metrics table..
-        if table.haskey(settings.metrics, data.name) then
-            metrics[data.name] = table.copy(settings.metrics[data.name]);
-        else
-            metrics[data.name] = table.copy(metricsTemplate);
-        end
-        metrics[data.name].totals = metrics[data.name].totals or table.copy(metricsTemplate.totals);
+        metrics[data.name] = cloneGatherMetrics(data.name, settings.metrics and settings.metrics[data.name] or nil);
         metrics[data.name].toolUnitsUsed = tonumber(metrics[data.name].toolUnitsUsed) or 0;
         metrics[data.name].totals.toolCost = tonumber(metrics[data.name].totals.toolCost) or 0;
         refreshGatherToolCostTotal(data.name);
@@ -3781,6 +3937,7 @@ ashita.events.register('load', 'yield_load', function()
         state.timers[data.name] = false;
         -- Add estimated value ui variables...
         uiVariables[string.format("var_%s_estimatedValue", data.name)] = { 0 }
+        recalculateEstimatedValueForGathering(data.name);
         -- Add textures..
         local texturePath = string.format('images/%s.png', data.name)
         local fullPath = addon.path .. texturePath;
@@ -3954,6 +4111,11 @@ ashita.events.register('command', 'yield_command', function(e)
 end);
 
 local ATTEMPT_CLOSE_GRACE_MS = 550;
+local CLAM_ATTEMPT_TIMEOUT_MS = 2500;
+local CLAM_HINT_FOLLOWUP_TIMEOUT_MS = 6500;
+local DIGGING_ATTEMPT_TIMEOUT_MS = 2500;
+local FISHING_ATTEMPT_TIMEOUT_MS = 10000;
+local FISHING_CAST_PENDING_WINDOW_MS = 20000;
 
 local function beginAttemptContext(source, gatherName)
     state.values.attemptIdCounter = (tonumber(state.values.attemptIdCounter) or 0) + 1;
@@ -3962,6 +4124,7 @@ local function beginAttemptContext(source, gatherName)
     state.values.activeAttemptStartedAt = os.clock();
     state.values.activeAttemptLastEventAt = state.values.activeAttemptStartedAt;
     state.values.activeAttemptCounted = false;
+    state.values.activeAttemptClamNoYieldHint = false;
     state.values.activeAttemptSeenMessages = {};
     state.values.attemptCloseSeq = (tonumber(state.values.attemptCloseSeq) or 0) + 1;
     writeDebugLog(string.format('attempt begin id=%s gather=%s source=%s',
@@ -3974,14 +4137,30 @@ local function clearAttemptContext(reason)
     end
     local prevId = state.values.activeAttemptId;
     local prevGather = state.values.activeAttemptGather;
+    local prevCounted = (state.values.activeAttemptCounted == true);
+    local prevClamNoYieldHint = (state.values.activeAttemptClamNoYieldHint == true);
     state.values.attemptCloseSeq = (tonumber(state.values.attemptCloseSeq) or 0) + 1;
     state.values.activeAttemptId = nil;
     state.values.activeAttemptGather = nil;
     state.values.activeAttemptStartedAt = nil;
     state.values.activeAttemptLastEventAt = nil;
     state.values.activeAttemptCounted = false;
+    state.values.activeAttemptClamNoYieldHint = false;
     state.values.activeAttemptSeenMessages = nil;
     state.attempting = false;
+    if prevGather == "clamming"
+        and prevClamNoYieldHint
+        and not prevCounted
+        and tostring(reason or ""):find("attempt_timeout", 1, true) ~= nil then
+        local priorGather = state.gathering;
+        state.gathering = "clamming";
+        adjTotal("attempts", 1);
+        playGatherEventAlert("clamming", "no_yield");
+        recordCurrentZone();
+        state.values.lastKnownGathering = "clamming";
+        writeDebugLog('clamming timeout resolved as no_yield');
+        state.gathering = priorGather;
+    end
     writeDebugLog(string.format('attempt close id=%s gather=%s reason=%s',
         tostring(prevId), tostring(prevGather), tostring(reason or "")));
 end
@@ -4026,6 +4205,104 @@ local function countAttemptOnce(reason)
     return true;
 end
 
+local function isClammingTraceMessage(message)
+    local msg = tostring(message or "");
+    return string.contains(msg, "clamming kit")
+        or string.contains(msg, "pieces of broken seashells")
+        or string.contains(msg, "toss it into your bucket")
+        or string.contains(msg, "broken bucket")
+        or string.contains(msg, "washed back into the sea")
+        or string.contains(msg, "you dropped the")
+        or string.contains(msg, "you drop the")
+        or string.contains(msg, "ponzes");
+end
+
+local function isFishingTraceMessage(message)
+    local msg = string.lower(tostring(message or ""));
+    return string.contains(msg, "you caught ")
+        or string.contains(msg, "you catch ")
+        or string.contains(msg, "you didn't catch anything")
+        or string.contains(msg, "you give up")
+        or string.contains(msg, "you lost your catch")
+        or string.contains(msg, "your rod breaks")
+        or string.contains(msg, "your line breaks")
+        or string.contains(msg, "terrible feeling")
+        or string.contains(msg, "bad feeling")
+        or string.contains(msg, "keen angler")
+        or string.contains(msg, "reel this one in")
+        or string.contains(msg, "keep this one on the line")
+        or string.contains(msg, "cast your line")
+        or string.contains(msg, "something caught the hook");
+end
+
+local function getFishingCastPendingAgeMs()
+    local startedAt = tonumber(state.values.fishingCastPendingAt);
+    if startedAt == nil then
+        return nil;
+    end
+    return math.floor(((os.clock() - startedAt) * 1000.0) + 0.5);
+end
+
+local function hasFreshFishingCastPending()
+    local ageMs = getFishingCastPendingAgeMs();
+    return ageMs ~= nil and ageMs <= FISHING_CAST_PENDING_WINDOW_MS, ageMs;
+end
+
+local function noteFishingCastPending(source, detail)
+    state.values.fishingCastPendingAt = os.clock();
+    state.values.fishingCastPendingSource = tostring(source or "");
+    state.values.fishingCastPendingDetail = tostring(detail or "");
+    writeDebugLog(string.format(
+        'fishing_cast_pending source=%s detail=%s windowMs=%s',
+        tostring(state.values.fishingCastPendingSource),
+        tostring(state.values.fishingCastPendingDetail),
+        tostring(FISHING_CAST_PENDING_WINDOW_MS)
+    ));
+end
+
+local function clearFishingCastPending(reason)
+    local ageMs = getFishingCastPendingAgeMs();
+    if ageMs ~= nil then
+        writeDebugLog(string.format(
+            'fishing_cast_pending_clear reason=%s ageMs=%s source=%s detail=%s',
+            tostring(reason or ""),
+            tostring(ageMs),
+            tostring(state.values.fishingCastPendingSource),
+            tostring(state.values.fishingCastPendingDetail)
+        ));
+    end
+    state.values.fishingCastPendingAt = nil;
+    state.values.fishingCastPendingSource = nil;
+    state.values.fishingCastPendingDetail = nil;
+end
+
+local function clearStaleFishingCastPending(reason)
+    local ageMs = getFishingCastPendingAgeMs();
+    if ageMs ~= nil and ageMs > FISHING_CAST_PENDING_WINDOW_MS then
+        clearFishingCastPending(reason or 'stale');
+        return true, ageMs;
+    end
+    return false, ageMs;
+end
+
+local function countDiggingAttemptsFromToolUse(consumed, reason)
+    local delta = math.max(0, math.floor(tonumber(consumed) or 0));
+    if delta <= 0 then
+        return 0;
+    end
+    metrics["digging"] = cloneGatherMetrics("digging", metrics["digging"]);
+    metrics["digging"].totals.attempts = (tonumber(metrics["digging"].totals.attempts) or 0) + delta;
+    if state.values.activeAttemptGather == "digging" and state.values.activeAttemptId ~= nil then
+        state.values.activeAttemptCounted = true;
+    end
+    writeDebugLog(string.format(
+        'attempt counted id=%s gather=digging reason=%s delta=%d total=%d',
+        tostring(state.values.activeAttemptId), tostring(reason or "tool_consume"),
+        delta, tonumber(metrics["digging"].totals.attempts) or 0
+    ));
+    return delta;
+end
+
 ---------------------------------------------------------------------------------------------------
 -- func: incoming_text
 -- desc: Event called when the addon is asked to handle an incoming chat line.
@@ -4041,9 +4318,32 @@ ashita.events.register('text_in', 'yield_text_in', function(e)
     end
 
     -- Remove colors form message..
-    local message = string.strip_colors(e.message);
+    local rawMessage = tostring(e.message or "");
+    local message = string.strip_colors(rawMessage);
     message = string.lower(message);
     message = string.gsub(message, "^%[%d%d:%d%d:%d%d%]%s*", "");
+    message = string.gsub(message, "[%z\1-\31]", "");
+    local shouldTraceClamming = isClammingTraceMessage(message)
+        or isClammingTraceMessage(rawMessage)
+        or state.attemptType == "clamming"
+        or state.gathering == "clamming"
+        or state.values.activeAttemptGather == "clamming";
+    local hasFishingCastPending, fishingCastPendingAgeMs = hasFreshFishingCastPending();
+    local shouldTraceFishing = isFishingTraceMessage(message)
+        or isFishingTraceMessage(rawMessage)
+        or state.attemptType == "fishing"
+        or state.gathering == "fishing"
+        or state.values.activeAttemptGather == "fishing"
+        or hasFishingCastPending;
+    if shouldTraceClamming or shouldTraceFishing then
+        writeDebugLog(string.format(
+            'text_in_trace mode=%s mode8=%s blocked=%s attempting=%s attemptType=%s gather=%s activeGather=%s fishingPendingAgeMs=%s raw=%s normalized=%s',
+            tostring(e.mode), tostring(mode), tostring(e.blocked), tostring(state.attempting),
+            tostring(state.attemptType), tostring(state.gathering), tostring(state.values.activeAttemptGather),
+            tostring(fishingCastPendingAgeMs),
+            tostring(rawMessage), tostring(message)
+        ));
+    end
     local playerName = string.lower(tostring(getPlayerName(true) or ""));
     local fishingSkillup = string.contains(message, string.format("%s's fishing skill rises", playerName))
         or string.contains(message, "your fishing skill rises");
@@ -4080,8 +4380,9 @@ ashita.events.register('text_in', 'yield_text_in', function(e)
             if obtainedBucket or returnedBucket then
                 state.values.clamConfirmedYields = table.copy(metrics["clamming"].yields);
                 state.values.clamBucketBroken = false;
+                state.values.clamBucketTotal = 0;
                 state.values.clamBucketPz = 0;
-                state.values.clamBucketPzMax = 50;
+                state.values.clamBucketPzMax = math.max(50, tonumber(state.values.clamBucketPzMax) or 50);
                 trySaveSettings('text_in_clam_bucket');
             end
         end
@@ -4110,6 +4411,10 @@ ashita.events.register('text_in', 'yield_text_in', function(e)
         local broken = false;
         local full = false;
         local lost = false;
+        local fishingLineBreak = false;
+        local bucketUnavailable = false;
+        local spotUnavailable = false;
+        local clammingBucketJustBroke = false;
 
         local gatherData = getGatherTypeData(state.gathering);
         if gatherData == nil then
@@ -4119,10 +4424,15 @@ ashita.events.register('text_in', 'yield_text_in', function(e)
         end
         if gatherData.name == "digging" then
             successBreak = false;
-            success = string.match(message, "obtained: (.*).") or false;
+            success = string.match(message, "^obtained: (.*)%.?$") or false;
             unable = string.contains(message, "you dig, but find nothing.");
             broken = false;
             lost = false;
+            writeDebugLog(string.format(
+                'digging_parse raw=%s success=%s unable=%s activeAttemptId=%s timer=%s',
+                tostring(rawMessage), tostring(success), tostring(unable),
+                tostring(state.values.activeAttemptId), tostring(state.timers["digging"] == true)
+            ));
         elseif gatherData.name == "fishing" then
             local playerName = getPlayerName(true);
             successBreak = false;
@@ -4135,40 +4445,78 @@ ashita.events.register('text_in', 'yield_text_in', function(e)
                 or false;
             unable = string.contains(message, "you didn't catch anything.") or string.contains(message, "you give up");
             broken = string.contains(message, "your rod breaks.");
-            lost = string.contains(message, "you lost your catch") or string.contains(message, "your line breaks.") or string.contains(message, "but cannot carry any more items.");
+            fishingLineBreak = string.contains(message, "your line breaks.");
+            lost = string.contains(message, "you lost your catch") or fishingLineBreak or string.contains(message, "but cannot carry any more items.");
+            local fishingBite = string.contains(message, "terrible feeling")
+                or string.contains(message, "bad feeling")
+                or string.contains(message, "keen angler")
+                or string.contains(message, "reel this one in")
+                or string.contains(message, "keep this one on the line");
+            local _, pendingAgeMs = hasFreshFishingCastPending();
+            writeDebugLog(string.format(
+                'fishing_parse raw=%s success=%s unable=%s broken=%s lost=%s bite=%s activeAttemptId=%s timer=%s pendingCastAgeMs=%s',
+                tostring(rawMessage), tostring(success), tostring(unable), tostring(broken), tostring(lost),
+                tostring(fishingBite), tostring(state.values.activeAttemptId),
+                tostring(state.timers["fishing"] == true), tostring(pendingAgeMs)
+            ));
         elseif gatherData.name == "clamming" then
             successBreak = false;
-            success = string.match(message, string.format("^you %s a (.*) and toss it into your bucket.", gatherData.action))
-                or string.match(message, string.format("^you %s an (.*) and toss it into your bucket.", gatherData.action));
-            unable = string.contains(message, "with a broken bucket!");
-            broken = string.contains(message, "and toss it into your bucket...");
-            lost = false;
+            local preBucketPz = tonumber(state.values.clamBucketPz) or 0;
+            local preBucketTotal = tonumber(state.values.clamBucketTotal) or 0;
+            local preBucketBroken = (state.values.clamBucketBroken == true);
+            success = string.match(message, string.format("^you %s a (.-) and toss it into your bucket", gatherData.action))
+                or string.match(message, string.format("^you %s an (.-) and toss it into your bucket", gatherData.action));
+            if string.contains(message, "pieces of broken seashells") then
+                state.values.activeAttemptClamNoYieldHint = true;
+                writeDebugLog('clamming hint: seashells no_yield preamble');
+                scheduleAttemptClose('attempt_timeout', CLAM_HINT_FOLLOWUP_TIMEOUT_MS);
+                writeDebugLog(string.format('clamming hint extended timeout=%sms', tostring(CLAM_HINT_FOLLOWUP_TIMEOUT_MS)));
+            end
+            bucketUnavailable = string.contains(message, "with a broken bucket!");
+            spotUnavailable = string.contains(message, "someone has been digging here");
+            unable = bucketUnavailable or spotUnavailable;
+            broken = string.contains(message, "and toss it into your bucket...")
+                or string.contains(message, "its bottom breaks");
+            lost = string.contains(message, "all your shellfish are washed back into the sea")
+                or string.contains(message, "you dropped the")
+                or string.contains(message, "you drop the");
             if success then
                 if state.values.clamBucketTotal == nil then state.values.clamBucketTotal = 0; end
                 state.values.clamBucketTotal = state.values.clamBucketTotal + 1;
             end
+            if success and not broken then
+                state.values.clamBucketBroken = false;
+            end
             if broken then
-                success = nil;
-                metrics[state.gathering].yields = table.copy(state.values.clamConfirmedYields);
-                metrics[state.gathering].totals.yields = table.sumValues(metrics[state.gathering].yields);
-                metrics[state.gathering].estimatedValue = 0;
+                -- Reset the current bucket state but preserve upgraded capacity.
                 state.values.clamBucketTotal = 0;
                 state.values.clamBucketPz = 0;
-                state.values.clamBucketPzMax = 50;
-                for yield, count in pairs(metrics[state.gathering].yields) do
-                    local price = getPrice(yield);
-                    metrics[state.gathering].estimatedValue = metrics[state.gathering].estimatedValue + (price * count);
-                end
-                imgui.SetVarValue(uiVariables[string.format("var_%s_estimatedValue", state.gathering)], metrics[state.gathering].estimatedValue);
-                playAlert(imgui.GetVarValue(uiVariables["var_ClamBreakSoundFile"]));
+                state.values.clamBucketPzMax = math.max(50, tonumber(state.values.clamBucketPzMax) or 50);
             end
-            if broken or unable then
+            if bucketUnavailable then
+                -- The server is authoritative here; once it rejects the bucket as broken,
+                -- any locally tracked current-bucket fill is stale.
+                state.values.clamBucketTotal = 0;
+                state.values.clamBucketPz = 0;
+            end
+            clammingBucketJustBroke = (broken or bucketUnavailable) and not preBucketBroken;
+            if broken or bucketUnavailable then
                 state.values.clamBucketBroken = true;
+                if clammingBucketJustBroke then
+                    consumeGatherToolUnit("clamming", 1, broken and "bucket_break" or "bucket_unavailable");
+                end
                 ashita.timer.once(1000, function () -- let plots update a second
                     state.timers[state.gathering] = false;
                 end);
                 trySaveSettings('text_in_clam_broken');
             end
+            writeDebugLog(string.format(
+                'clamming_parse raw=%s success=%s unable=%s broken=%s lost=%s hint=%s bucket_before(total=%s pz=%s broken=%s) bucket_after(total=%s pz=%s broken=%s)',
+                tostring(rawMessage), tostring(success), tostring(unable), tostring(broken), tostring(lost),
+                tostring(state.values.activeAttemptClamNoYieldHint == true),
+                tostring(preBucketTotal), tostring(preBucketPz), tostring(preBucketBroken),
+                tostring(state.values.clamBucketTotal), tostring(state.values.clamBucketPz), tostring(state.values.clamBucketBroken == true)
+            ));
         else
             successBreak = string.match(message, string.format("^you %s a (.*), but your %s .*", gatherData.action, gatherData.tool))
                 or string.match(message, string.format("^you %s an (.*), but your %s .*", gatherData.action, gatherData.tool));
@@ -4214,7 +4562,7 @@ ashita.events.register('text_in', 'yield_text_in', function(e)
         writeDebugLog(string.format('parse_result gather=%s success=%s unable=%s broken=%s lost=%s full=%s',
             tostring(state.gathering), tostring(success), tostring(unable), tostring(broken), tostring(lost), tostring(full)));
 
-        if unable then
+        if unable and not (state.gathering == "clamming" and spotUnavailable) then
             playGatherEventAlert(state.gathering, "no_yield");
         end
         if full then
@@ -4238,11 +4586,17 @@ ashita.events.register('text_in', 'yield_text_in', function(e)
             writeDebugLog(string.format('parse_success resolved gather=%s resolved="%s" break=%s successBreak=%s',
                 tostring(state.gathering), tostring(success), tostring(broken), tostring(successBreak)));
             val = getPrice(success);
-            adjYield(success, 1);
-            if state.gathering == "clamming" then
+            local clammingLostCurrentYield = (state.gathering == "clamming" and lost == true);
+            local yieldSoundPlayed = false;
+            if not clammingLostCurrentYield then
+                adjYield(success, 1);
+            end
+            if state.gathering == "clamming" and not broken and not lost then
                 state.values.clamBucketPz = state.values.clamBucketPz + settings.yields[state.gathering][success].pz
             end
-            local yieldSoundPlayed = alertYield(success);
+            if not clammingLostCurrentYield then
+                yieldSoundPlayed = alertYield(success);
+            end
             if successBreak then
                 writeDebugLog(string.format('parse_dual_event gather=%s yield=%s break=true yieldSoundPlayed=%s',
                     tostring(state.gathering), tostring(success), tostring(yieldSoundPlayed)));
@@ -4261,7 +4615,15 @@ ashita.events.register('text_in', 'yield_text_in', function(e)
                     playBreakAlert();
                 end
             end
-            adjTotal("yields", 1);
+            if not clammingLostCurrentYield then
+                adjTotal("yields", 1);
+            end
+            if lost then
+                adjTotal("lost", 1);
+            end
+            if state.gathering == "clamming" and broken and lost then
+                restoreClammingConfirmedYields('bucket_break_lost');
+            end
             writeDebugLog(string.format('parse_success totals gather=%s yields=%s breaks=%s attempts=%s',
                 tostring(state.gathering),
                 tostring(metrics[state.gathering].totals.yields),
@@ -4278,8 +4640,42 @@ ashita.events.register('text_in', 'yield_text_in', function(e)
         elseif full or lost then
             adjTotal("lost", 1);
         end
+        if state.gathering == "clamming" and bucketUnavailable and clammingBucketJustBroke then
+            adjTotal("breaks", 1);
+        end
+        if state.gathering == "fishing" and fishingLineBreak then
+            adjTotal("breaks", 1);
+            writeDebugLog('fishing_line_break counted_as_break');
+        end
+        if state.gathering == "clamming" and bucketUnavailable then
+            restoreClammingConfirmedYields('bucket_unavailable');
+        end
+        if state.gathering == "fishing" then
+            writeDebugLog(string.format(
+                'fishing_app_state attemptId=%s counted=%s timer=%s totals(attempts=%s yields=%s breaks=%s lost=%s)',
+                tostring(state.values.activeAttemptId),
+                tostring(state.values.activeAttemptCounted == true),
+                tostring(state.timers["fishing"] == true),
+                tostring(metrics["fishing"].totals.attempts),
+                tostring(metrics["fishing"].totals.yields),
+                tostring(metrics["fishing"].totals.breaks),
+                tostring(metrics["fishing"].totals.lost)
+            ));
+        end
+        local shouldCountAttempt = true;
+        if state.gathering == "clamming" and spotUnavailable then
+            shouldCountAttempt = false;
+            writeDebugLog(string.format(
+                'clamming cooldown rejection not counted attemptId=%s gather=%s message="%s"',
+                tostring(state.values.activeAttemptId), tostring(state.gathering), tostring(message)
+            ));
+        elseif state.gathering == "digging" then
+            shouldCountAttempt = false;
+        end
         if success or unable or broken or full or lost then
-            countAttemptOnce('text_terminal');
+            if shouldCountAttempt then
+                countAttemptOnce('text_terminal');
+            end
             recordCurrentZone();
             state.values.lastKnownGathering = state.gathering;
             scheduleAttemptClose('text_terminal', ATTEMPT_CLOSE_GRACE_MS);
@@ -4329,36 +4725,102 @@ ashita.events.register('packet_out', 'yield_packet_out', function(e)
             clearAttemptContext('packet_out_helm_unmatched');
         end
         writeDebugLog(string.format('packet_out_helm matched=%s gather=%s', tostring(matched), tostring(state.gathering)));
-    elseif e.id == 0x01A then -- clam
+    elseif e.id == 0x01A then -- action
+        local packetAction = struct.unpack("H", e.data, 0x0A + 1);
         local player = AshitaCore:GetMemoryManager():GetPlayer();
+        clearStaleFishingCastPending('packet_out_01A_stale');
         if targetName == "Clamming Point" and player and player:HasKeyItem(511) then
             state.attempting = true;
             state.attemptType = "clamming";
             state.gathering = "clamming";
             beginAttemptContext('packet_out_01A_clam', 'clamming');
-            scheduleAttemptClose('attempt_timeout', 2500);
-        elseif struct.unpack("H", e.data, 0x0A + 1) == 0x1104 then -- digging
+            scheduleAttemptClose('attempt_timeout', CLAM_ATTEMPT_TIMEOUT_MS);
+        elseif packetAction == 0x1104 or packetAction == 0x0011 then -- digging
+            if state.attempting and state.values.activeAttemptGather ~= "digging" then
+                clearAttemptContext('packet_out_01A_digging_override');
+            end
+            clearFishingCastPending('packet_out_01A_digging');
             state.attempting = true;
             state.attemptType = "digging";
             state.gathering = "digging";
             beginAttemptContext('packet_out_01A_digging', 'digging');
-            scheduleAttemptClose('attempt_timeout', 2500);
+            scheduleAttemptClose('attempt_timeout', DIGGING_ATTEMPT_TIMEOUT_MS);
+            writeDebugLog(string.format(
+                'packet_out_digging begin attemptId=%s sub=0x%04X target=%s',
+                tostring(state.values.activeAttemptId), tonumber(packetAction) or 0, tostring(targetName)
+            ));
         else
-            clearAttemptContext('packet_out_01A_unmatched');
+            local shouldTraceFishingCast = targetName == nil
+                and (state.gathering == "fishing"
+                    or state.attemptType == "fishing"
+                    or state.values.lastKnownGathering == "fishing");
+            if shouldTraceFishingCast then
+                noteFishingCastPending('packet_out_01A_fishing_suspect', string.format(
+                    'sub=0x%04X bait=%s target=%s',
+                    tonumber(packetAction) or 0,
+                    tostring(playerStorage["bait"]),
+                    tostring(targetName)
+                ));
+            end
+            if shouldTraceFishingCast and packetAction == 0x000E then
+                if state.attempting and state.values.activeAttemptGather == "fishing" then
+                    clearAttemptContext('packet_out_01A_fishing_recast');
+                end
+                state.attempting = true;
+                state.attemptType = "fishing";
+                state.gathering = "fishing";
+                beginAttemptContext('packet_out_01A_fishing_cast', 'fishing');
+                countAttemptOnce('packet_out_fishing_cast');
+                scheduleAttemptClose('attempt_timeout_cast', FISHING_CAST_PENDING_WINDOW_MS);
+                if not state.timers["fishing"] then
+                    state.timers["fishing"] = true;
+                    state.values.toolCountLast = state.values.toolCountLast or {};
+                    state.values.toolCountLast["fishing"] = tonumber(playerStorage["bait"]) or 0;
+                end
+                writeDebugLog(string.format(
+                    'packet_out_fishing_cast begin attemptId=%s sub=0x%04X bait=%s',
+                    tostring(state.values.activeAttemptId), tonumber(packetAction) or 0, tostring(playerStorage["bait"])
+                ));
+            end
+            if state.attempting and state.attemptType == "fishing" then
+                writeDebugLog('packet_out_01A_unmatched preserving active fishing attempt');
+            else
+                clearAttemptContext('packet_out_01A_unmatched');
+            end
         end
-        writeDebugLog(string.format('packet_out_01A attempting=%s attemptType=%s gather=%s', tostring(state.attempting), tostring(state.attemptType), tostring(state.gathering)));
+        writeDebugLog(string.format(
+            'packet_out_01A attempting=%s attemptType=%s gather=%s sub=0x%04X fishingPendingAgeMs=%s',
+            tostring(state.attempting), tostring(state.attemptType), tostring(state.gathering),
+            tonumber(packetAction) or 0, tostring(getFishingCastPendingAgeMs())
+        ));
     elseif e.id == 0x110 then -- fishing
         local action = struct.unpack("H", e.data, 0x0E + 1);
+        local hasPendingCast, pendingAgeMs = hasFreshFishingCastPending();
         if action ~= 4 then
-            state.attempting = true;
             state.attemptType = "fishing";
             state.gathering = "fishing";
-            beginAttemptContext('packet_out_fishing', 'fishing');
-            scheduleAttemptClose('attempt_timeout', 4000);
+            if state.attempting and state.values.activeAttemptGather == "fishing" and state.values.activeAttemptId ~= nil then
+                writeDebugLog(string.format(
+                    'packet_out_fishing continue action=%s attemptId=%s pendingCastAgeMs=%s',
+                    tostring(action), tostring(state.values.activeAttemptId), tostring(pendingAgeMs)
+                ));
+            else
+                state.attempting = true;
+                beginAttemptContext(hasPendingCast and 'packet_out_fishing_after_cast' or 'packet_out_fishing', 'fishing');
+            end
+            scheduleAttemptClose('attempt_timeout', FISHING_ATTEMPT_TIMEOUT_MS);
+            if hasPendingCast then
+                clearFishingCastPending('packet_out_fishing_linked');
+            end
         else
+            clearFishingCastPending('packet_out_fishing_cancel');
             clearAttemptContext('packet_out_fishing_cancel');
         end
-        writeDebugLog(string.format('packet_out_fishing action=%s attempting=%s', tostring(action), tostring(state.attempting)));
+        writeDebugLog(string.format(
+            'packet_out_fishing action=%s attempting=%s activeAttemptId=%s timeoutMs=%s pendingCastAgeMs=%s',
+            tostring(action), tostring(state.attempting), tostring(state.values.activeAttemptId),
+            tostring(FISHING_ATTEMPT_TIMEOUT_MS), tostring(pendingAgeMs)
+        ));
     end
 end);
 
@@ -4777,28 +5239,29 @@ local SettingsWindow =
             setWindowFontScale(state.window.textScale);
             logScaleSnapshot("scale_tuning", "");
             local closeScaleTuning = false;
-            imgui.Text("Tune global scaling behavior.");
+            imgui.Text("Tune global scaling behavior around the built-in baseline.");
+            imgui.Text("0.000 = built-in default. Negative adjusts left; positive adjusts right.");
             imgui.Text("Changes preview live while this modal is open.");
             imgui.Separator();
             imgui.PushItemWidth(state.window.widthWidgetDefault);
-            imgui.SliderFloat("Rest Text Base", uiVariables["var_TextScaleBase"], 0.50, 2.50, "%.3f");
-            imgui.SliderFloat("Rest Text Factor", uiVariables["var_TextScaleFactor"], 0.00, 2.50, "%.3f");
+            imgui.SliderFloat("Rest Text Base Offset", uiVariables["var_TextScaleBase"], -SCALE_TUNING_OFFSET_RANGE, SCALE_TUNING_OFFSET_RANGE, "%+.3f");
+            imgui.SliderFloat("Rest Text Factor Offset", uiVariables["var_TextScaleFactor"], -SCALE_TUNING_OFFSET_RANGE, SCALE_TUNING_OFFSET_RANGE, "%+.3f");
             imgui.Separator();
-            imgui.SliderFloat("Metrics Text Base", uiVariables["var_MetricsTextScaleBase"], 0.50, 2.50, "%.3f");
-            imgui.SliderFloat("Metrics Text Factor", uiVariables["var_MetricsTextScaleFactor"], 0.00, 2.50, "%.3f");
+            imgui.SliderFloat("Metrics Text Base Offset", uiVariables["var_MetricsTextScaleBase"], -SCALE_TUNING_OFFSET_RANGE, SCALE_TUNING_OFFSET_RANGE, "%+.3f");
+            imgui.SliderFloat("Metrics Text Factor Offset", uiVariables["var_MetricsTextScaleFactor"], -SCALE_TUNING_OFFSET_RANGE, SCALE_TUNING_OFFSET_RANGE, "%+.3f");
             imgui.Separator();
-            imgui.SliderFloat("Button Text Base", uiVariables["var_ButtonTextScaleBase"], 0.50, 2.50, "%.3f");
-            imgui.SliderFloat("Button Text Factor", uiVariables["var_ButtonTextScaleFactor"], 0.00, 2.50, "%.3f");
+            imgui.SliderFloat("Button Text Base Offset", uiVariables["var_ButtonTextScaleBase"], -SCALE_TUNING_OFFSET_RANGE, SCALE_TUNING_OFFSET_RANGE, "%+.3f");
+            imgui.SliderFloat("Button Text Factor Offset", uiVariables["var_ButtonTextScaleFactor"], -SCALE_TUNING_OFFSET_RANGE, SCALE_TUNING_OFFSET_RANGE, "%+.3f");
             imgui.Separator();
-            imgui.SliderFloat("Button Size X Base", uiVariables["var_ButtonSizeXBase"], 0.50, 2.50, "%.3f");
-            imgui.SliderFloat("Button Size X Factor", uiVariables["var_ButtonSizeXFactor"], 0.00, 2.50, "%.3f");
-            imgui.SliderFloat("Button Size Y Base", uiVariables["var_ButtonSizeYBase"], 0.50, 2.50, "%.3f");
-            imgui.SliderFloat("Button Size Y Factor", uiVariables["var_ButtonSizeYFactor"], 0.00, 2.50, "%.3f");
+            imgui.SliderFloat("Button Size X Base Offset", uiVariables["var_ButtonSizeXBase"], -SCALE_TUNING_OFFSET_RANGE, SCALE_TUNING_OFFSET_RANGE, "%+.3f");
+            imgui.SliderFloat("Button Size X Factor Offset", uiVariables["var_ButtonSizeXFactor"], -SCALE_TUNING_OFFSET_RANGE, SCALE_TUNING_OFFSET_RANGE, "%+.3f");
+            imgui.SliderFloat("Button Size Y Base Offset", uiVariables["var_ButtonSizeYBase"], -SCALE_TUNING_OFFSET_RANGE, SCALE_TUNING_OFFSET_RANGE, "%+.3f");
+            imgui.SliderFloat("Button Size Y Factor Offset", uiVariables["var_ButtonSizeYFactor"], -SCALE_TUNING_OFFSET_RANGE, SCALE_TUNING_OFFSET_RANGE, "%+.3f");
             imgui.Separator();
-            imgui.SliderFloat("Window X Base", uiVariables["var_WindowXScaleBase"], 0.50, 2.50, "%.3f");
-            imgui.SliderFloat("Window X Factor", uiVariables["var_WindowXScaleFactor"], 0.00, 2.50, "%.3f");
-            imgui.SliderFloat("Window Y Base", uiVariables["var_WindowYScaleBase"], 0.50, 2.50, "%.3f");
-            imgui.SliderFloat("Window Y Factor", uiVariables["var_WindowYScaleFactor"], 0.00, 2.50, "%.3f");
+            imgui.SliderFloat("Window X Base Offset", uiVariables["var_WindowXScaleBase"], -SCALE_TUNING_OFFSET_RANGE, SCALE_TUNING_OFFSET_RANGE, "%+.3f");
+            imgui.SliderFloat("Window X Factor Offset", uiVariables["var_WindowXScaleFactor"], -SCALE_TUNING_OFFSET_RANGE, SCALE_TUNING_OFFSET_RANGE, "%+.3f");
+            imgui.SliderFloat("Window Y Base Offset", uiVariables["var_WindowYScaleBase"], -SCALE_TUNING_OFFSET_RANGE, SCALE_TUNING_OFFSET_RANGE, "%+.3f");
+            imgui.SliderFloat("Window Y Factor Offset", uiVariables["var_WindowYScaleFactor"], -SCALE_TUNING_OFFSET_RANGE, SCALE_TUNING_OFFSET_RANGE, "%+.3f");
             imgui.PopItemWidth();
 
             syncScaleTuningSettingsFromVars();
@@ -5598,15 +6061,23 @@ ashita.events.register('d3d_present', 'yield_render', function()
             if imguiShowToolTip("Total pz value in current bucket (will turn red when within 5 points of limit). ", settings.general.showToolTips) then
                 imgui.SameLine(0.0, state.window.spaceToolTip);
             end
-            local pzDiff = state.values.clamBucketPzMax - state.values.clamBucketPz;
-            if pzDiff <= 5 then
+            local bucketPz = tonumber(state.values.clamBucketPz) or 0;
+            local bucketPzMax = math.max(50, tonumber(state.values.clamBucketPzMax) or 50);
+            local pzDiff = bucketPzMax - bucketPz;
+            if state.values.clamBucketBroken then
                 imgui.PushStyleColor(ImGuiCol_Text, { 1, 0.615, 0.615, 1 }); -- danger
-            elseif pzDiff <= state.values.clamBucketPzMax/2 then
+            elseif pzDiff <= 5 then
+                imgui.PushStyleColor(ImGuiCol_Text, { 1, 0.615, 0.615, 1 }); -- danger
+            elseif pzDiff <= bucketPzMax / 2 then
                 imgui.PushStyleColor(ImGuiCol_Text, { 1, 1, 0.54, 1 }); -- warn
             else
                 imgui.PushStyleColor(ImGuiCol_Text, { 0.77, 0.83, 0.80, 1 }); -- plain
             end
-            imgui.Text(string.format("Bucket: %spz", state.values.clamBucketPz));
+            if state.values.clamBucketBroken then
+                imgui.Text("Bucket: Broken");
+            else
+                imgui.Text(string.format("Bucket: %d/%d pz", bucketPz, bucketPzMax));
+            end
             imgui.PopStyleColor();
         end
     end
@@ -5628,7 +6099,9 @@ ashita.events.register('d3d_present', 'yield_render', function()
         imgui.PushStyleColor(ImGuiCol_Text, { 1, 0.615, 0.615, 1 }); -- danger
     else
         if state.gathering == "clamming" and state.values.clamBucketBroken then
-            imgui.PushStyleColor(ImGuiCol_Text, { 1, 1, 0.54, 1 }); -- warn
+            imgui.PushStyleColor(ImGuiCol_Text, { 1, 0.615, 0.615, 1 }); -- danger
+        elseif state.gathering == "clamming" and avail >= 1 then
+            imgui.PushStyleColor(ImGuiCol_Text, { 0.39, 0.96, 0.13, 1 }); -- ready
         else
             imgui.PushStyleColor(ImGuiCol_Text, { 0.77, 0.83, 0.80, 1 }); -- plain
         end
@@ -5647,7 +6120,7 @@ ashita.events.register('d3d_present', 'yield_render', function()
     local value = tostring(avail);
     if state.gathering == "clamming" then
         if not state.values.clamBucketBroken then
-            if avail == 1 then value = "Ready"; else value = "None"; end
+            if avail == 1 then value = "OK"; else value = "None"; end
         else
             value = "Broken";
         end
@@ -6195,7 +6668,7 @@ ashita.events.register('d3d_present', 'yield_render', function()
                     end);
                 end
                 -- Reset the metrics..
-                metrics[gather] = table.copy(metricsTemplate);
+                metrics[gather] = cloneGatherMetrics(gather, nil);
                 state.values.toolCountLast = state.values.toolCountLast or {};
                 for _, gData in ipairs(gatherTypes) do
                     if gData.name == gather then
@@ -6218,6 +6691,7 @@ ashita.events.register('d3d_present', 'yield_render', function()
                 state.values.lastKnownGathering = nil;
                 if gather == "clamming" then
                     state.values.clamConfirmedYields = {};
+                    state.values.clamBucketTotal = 0;
                     state.values.clamBucketPz = 0;
                 end
                 trySaveSettings(string.format('reset_confirm_%s', tostring(gather)), true);
@@ -6274,8 +6748,13 @@ ashita.events.register('d3d_present', 'yield_render', function()
     local headerReserve = headerTopPad + lineHeight + headerDividerReserve;
     local footerDividerGap = math.max(2.0, tonumber(uiSpace.xs) or 0.0);
     local footerDividerReserve = math.max(6.0, (footerDividerGap * 2.0) + 1.0);
-    local footerButtonHeight, _, _, footerReserve = calcFooterMetrics();
-    local confirmFooterReserve = math.ceil(tonumber(footerReserve) or 0.0);
+    local footerButtonHeight = calcScaledButtonHeight();
+    local confirmFooterPad = math.max(
+        2.0,
+        tonumber(uiSpace.xs) or 0.0,
+        (tonumber(state.window.padY) or 5.0) * 0.45
+    );
+    local confirmFooterReserve = math.ceil(footerButtonHeight + (confirmFooterPad * 2.0));
     local wrapWidth = math.max(160.0, tonumber(modalWidth) - (modalInsetX * 2.0) - modalPadX);
     local promptLines = estimateWrappedLineCount(state.values.modalConfirmPrompt, wrapWidth, charWidthPx);
     local helpText = tostring(state.values.modalConfirmHelp or "");
@@ -6289,7 +6768,7 @@ ashita.events.register('d3d_present', 'yield_render', function()
     bodyTextHeight = bodyTextHeight + bodyGap + math.max(lineHeight, hintLines * lineHeight);
     local bodyBottomReserve = footerGap + math.max(lineHeight * 0.35, tonumber(uiSpace.xs) or 0.0);
     local bodyReserve = headerReserve + modalSectionGap + bodyTextHeight + bodyBottomReserve;
-    local modalBottomReserve = math.max(2.0, tonumber(uiSpace.xs) or 0.0);
+    local modalBottomReserve = 0.0;
     local neededHeight = modalPadY + bodyReserve + footerDividerReserve + (tonumber(confirmFooterReserve) or 0.0) + modalBottomReserve;
     modalHeight = math.max(tonumber(modalHeight) or 0.0, math.ceil(neededHeight));
     local modalX = (io.DisplaySize.x * 0.5) - (modalWidth * 0.5);
@@ -7583,8 +8062,9 @@ function renderSettingsReports()
             if reportScale > 1.5 then reportScale = 1.5; end
             local baseTextScale = tonumber(state.window.textScale) or 1.0;
             if baseTextScale < 0.25 then baseTextScale = 1.0; end
-            -- Calibration: report body glyphs render larger than control text at the same scale.
-            local calibratedBase = baseTextScale * 0.70;
+            -- Keep the report reader close to the standard Settings body text size at 1.0x,
+            -- while still leaving a little room for its denser text blocks.
+            local calibratedBase = baseTextScale * 0.86;
             setWindowFontScale(calibratedBase * reportScale);
             imgui.PushTextWrapPos(getAvailX(imgui.GetContentRegionAvail()));
             local fname = state.values.currentReportName;
