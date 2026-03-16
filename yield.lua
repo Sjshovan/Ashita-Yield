@@ -2352,7 +2352,16 @@ function updatePlayerStorage()
                 local consumed = lastCount - currentCount;
                 metrics[gatherName].toolUnitsUsed = metrics[gatherName].toolUnitsUsed + consumed;
                 if gatherName == "digging" then
-                    countDiggingAttemptsFromToolUse(consumed, 'tool_consume');
+                    metrics[gatherName].totals.attempts = (tonumber(metrics[gatherName].totals.attempts) or 0) + consumed;
+                    if state.values.activeAttemptGather == "digging" and state.values.activeAttemptId ~= nil then
+                        state.values.activeAttemptCounted = true;
+                    end
+                    writeDebugLog(string.format(
+                        'attempt counted id=%s gather=digging reason=tool_consume delta=%d total=%d',
+                        tostring(state.values.activeAttemptId),
+                        tonumber(consumed) or 0,
+                        tonumber(metrics[gatherName].totals.attempts) or 0
+                    ));
                 end
                 writeDebugLog(string.format('tool_cost consume gather=%s delta=%d used=%d',
                     tostring(gatherName), tonumber(consumed) or 0, tonumber(metrics[gatherName].toolUnitsUsed) or 0));
@@ -4283,24 +4292,6 @@ local function clearStaleFishingCastPending(reason)
         return true, ageMs;
     end
     return false, ageMs;
-end
-
-local function countDiggingAttemptsFromToolUse(consumed, reason)
-    local delta = math.max(0, math.floor(tonumber(consumed) or 0));
-    if delta <= 0 then
-        return 0;
-    end
-    metrics["digging"] = cloneGatherMetrics("digging", metrics["digging"]);
-    metrics["digging"].totals.attempts = (tonumber(metrics["digging"].totals.attempts) or 0) + delta;
-    if state.values.activeAttemptGather == "digging" and state.values.activeAttemptId ~= nil then
-        state.values.activeAttemptCounted = true;
-    end
-    writeDebugLog(string.format(
-        'attempt counted id=%s gather=digging reason=%s delta=%d total=%d',
-        tostring(state.values.activeAttemptId), tostring(reason or "tool_consume"),
-        delta, tonumber(metrics["digging"].totals.attempts) or 0
-    ));
-    return delta;
 end
 
 ---------------------------------------------------------------------------------------------------
