@@ -6,6 +6,10 @@
 
 > An Ashita v3 addon that allows you to track and edit gathering metrics within a simple GUI in Final Fantasy 11 Online.
 
+> Looking for the HorizonXI-specific version? Check out [Sjshovan/Ashita-Yield-HXI](https://github.com/Sjshovan/Ashita-Yield-HXI).
+> That repository is the Ashita v4 port of Yield built specifically for the HorizonXI private server.
+> Compatibility with other servers running Ashita v4 is not guaranteed.
+
 <img src="https://i.postimg.cc/rsWfXXN8/yield-1-0-1.png..." data-canonical-src="https://i.postimg.cc/rsWfXXN8/yield-1-0-1.png" width="175" height="350" />
 <img src="https://i.postimg.cc/3RkL1Dy0/yield-1-0-2.png..." data-canonical-src="https://i.postimg.cc/3RkL1Dy0/yield-1-0-2.png" width="400" height="350" />
 <img src="https://i.postimg.cc/FKWW0xKQ/yield-1-0-3.png..." data-canonical-src="https://i.postimg.cc/FKWW0xKQ/yield-1-0-3.png" width="400" height="350" />
